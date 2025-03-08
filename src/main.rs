@@ -1,7 +1,6 @@
-use std::io::Error;
+use std::{io::Error, sync::Arc};
 
-use tcp::{protocol::HeaderTypes, server::ServerInstance};
-use tokio::io::AsyncReadExt;
+use tcp::server::ServerInstance;
 
 mod game;
 mod tcp;
@@ -10,22 +9,8 @@ mod tcp;
 async fn main() -> Result<(), Error> {
     let port = 8000;
     if let Ok(server) = ServerInstance::create_instance(port).await {
-        loop {
-            if let Ok((mut stream, addr)) = server.socket.accept().await {
-                let mut buffer = [0; 1024];
-                let bytes_read = stream.read(&mut buffer).await.unwrap();
-
-                if bytes_read <= 0 {
-                    drop(stream);
-                    continue;
-                }
-
-                match HeaderTypes::try_from(buffer[0]).unwrap() {
-                    HeaderTypes::Connect => {}
-                    _ => {}
-                }
-            }
-        }
+        let server_arc = Arc::new(server);
+        server_arc.run().await;
     }
     Ok(())
 }
