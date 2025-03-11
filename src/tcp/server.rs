@@ -5,12 +5,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::RwLock,
 };
 
-use crate::game::{game_state::GameState, player_state::PlayerState};
+use crate::{
+    game::{game_state::GameState, player_state::PlayerState},
+    tcp::protocol::{PacketHeader, Protocol},
+};
 
 use super::protocol::HeaderTypes;
 
@@ -39,22 +42,43 @@ impl ServerInstance {
         };
     }
 
-    async fn handle_client(server: Arc<ServerInstance>, mut stream: TcpStream, addr: SocketAddr) {
+    async fn handle_client(server: Arc<ServerInstance>, mut c_stream: TcpStream, addr: SocketAddr) {
         let mut buffer = [0; 1024];
         let mut player_id: Option<String> = None;
         loop {
-            let bytes_read = match stream.read(&mut buffer).await {
+            let bytes_read = match c_stream.read(&mut buffer).await {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(_) => break,
             };
 
             println!("[Read]# Received {bytes_read} bytes from {addr}");
-            match HeaderTypes::try_from(buffer[0]).unwrap() {
+            let header = PacketHeader::from_bytes(&buffer[..5])
+                .unwrap()
+                .convert()
+                .unwrap();
+
+            match header.0 {
                 HeaderTypes::Connect => {
-                    let player = PlayerState::forge_connection(&buffer);
-                    player_id = Some(player.id.clone());
-                    server.add_player(player).await;
+                    if let Ok(player) = PlayerState::forge_connection(&buffer[6..bytes_read - 1]) {
+                        player_id = Some(player.id.clone());
+                        server.add_player(player).await;
+                        let body: [u8; 2] = [0x00, 0x00];
+                        let e_response =
+                            Protocol::create_response(HeaderTypes::PlayerConnected, &body);
+                        println!("{:?}", &e_response);
+                        if let Err(_) = c_stream.write_all(&e_response).await {
+                            eprint!("[Error]# Unable to write to {addr}");
+                            break;
+                        }
+                    } else {
+                        let body: [u8; 2] = [0x00, 0x00];
+                        let e_response = Protocol::create_response(HeaderTypes::Err, &body);
+                        if let Err(_) = c_stream.write_all(&e_response).await {
+                            eprint!("[Error]# Unable to write to {addr}");
+                            break;
+                        }
+                    }
                 }
                 _ => break,
             }
@@ -67,10 +91,10 @@ impl ServerInstance {
 
     pub async fn run(self: Arc<Self>) {
         loop {
-            if let Ok((stream, addr)) = self.socket.accept().await {
+            if let Ok((c_stream, addr)) = self.socket.accept().await {
                 println!("[Incoming]# {addr}");
                 let server_clone = Arc::clone(&self);
-                tokio::spawn(ServerInstance::handle_client(server_clone, stream, addr));
+                tokio::spawn(ServerInstance::handle_client(server_clone, c_stream, addr));
             }
         }
     }

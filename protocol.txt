@@ -1,0 +1,8 @@
+# Protocol Header
+| Type (1 Byte) | Body Length (2 Bytes) | Check sum (2 Bytes) |
+
+# Connect Player Protocol Body
+| Uuid (16 bytes) |
+| Nickname (16 bytes) |
+
+# Last byte should be 0x1A
