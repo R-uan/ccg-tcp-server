@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io::Error,
     net::{Ipv4Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -43,8 +43,10 @@ impl ServerInstance {
     }
 
     async fn handle_client(server: Arc<ServerInstance>, mut c_stream: TcpStream, addr: SocketAddr) {
+        let mut attempts = 0;
         let mut buffer = [0; 1024];
         let mut player_id: Option<String> = None;
+
         loop {
             let bytes_read = match c_stream.read(&mut buffer).await {
                 Ok(0) => break,
@@ -53,37 +55,58 @@ impl ServerInstance {
             };
 
             println!("[Read]# Received {bytes_read} bytes from {addr}");
-            let header = PacketHeader::from_bytes(&buffer[..5])
-                .unwrap()
-                .convert()
-                .unwrap();
+            if let Ok(header) = PacketHeader::from_bytes(&buffer[..5]) {
+                match header.message_type {
+                    HeaderTypes::Connect => {
+                        if let Ok(player) = PlayerState::new(&buffer[6..bytes_read - 1]) {
+                            player_id = Some(player.id.clone());
+                            server.add_player(player).await;
 
-            match header.0 {
-                HeaderTypes::Connect => {
-                    if let Ok(player) = PlayerState::forge_connection(&buffer[6..bytes_read - 1]) {
-                        player_id = Some(player.id.clone());
-                        server.add_player(player).await;
-                        let body: [u8; 2] = [0x00, 0x00];
-                        let e_response =
-                            Protocol::create_response(HeaderTypes::PlayerConnected, &body);
-                        println!("{:?}", &e_response);
-                        if let Err(_) = c_stream.write_all(&e_response).await {
-                            eprint!("[Error]# Unable to write to {addr}");
-                            break;
-                        }
-                    } else {
-                        let body: [u8; 2] = [0x00, 0x00];
-                        let e_response = Protocol::create_response(HeaderTypes::Err, &body);
-                        if let Err(_) = c_stream.write_all(&e_response).await {
-                            eprint!("[Error]# Unable to write to {addr}");
-                            break;
+                            let body = b"Player sucessfully connected";
+
+                            let e_response =
+                                Protocol::create_packet(HeaderTypes::PlayerConnected, body);
+
+                            if let Err(_) = c_stream.write_all(&e_response).await {
+                                eprint!("[Error] # Unable to write to {addr}");
+                                break;
+                            }
+                        } else {
+                            let body = b"Unable to connect player";
+
+                            let e_response = Protocol::create_packet(HeaderTypes::Err, body);
+
+                            if let Err(_) = c_stream.write_all(&e_response).await {
+                                eprint!("[Error] # Unable to write to {addr}");
+                                break;
+                            }
+
+                            attempts += 1;
+                            eprint!(
+                                "[Error] # Unable to connect player {addr}...Attempts: {attempts}"
+                            );
                         }
                     }
+                    _ => {
+                        let body = b"Invalid header";
+                        let response = Protocol::create_packet(HeaderTypes::Err, body);
+                        if let Err(_) = c_stream.write_all(&response).await {
+                            eprint!("[Error] # Unable to write to {addr}");
+                            break;
+                        };
+                    }
                 }
-                _ => break,
+            } else {
+                let body = b"Invalid header";
+                let response = Protocol::create_packet(HeaderTypes::Err, body);
+                if let Err(_) = c_stream.write_all(&response).await {
+                    eprint!("[Error] # Unable to write to {addr}");
+                    break;
+                };
             }
         }
 
+        println!("[Close] # Closing connection with {addr}");
         if let Some(player_id) = player_id {
             server.remove_player(&player_id).await;
         }

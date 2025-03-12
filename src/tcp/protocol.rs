@@ -1,4 +1,4 @@
-use std::io::Error;
+use std::fmt::{self};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq)]
@@ -23,29 +23,39 @@ impl TryFrom<u8> for HeaderTypes {
 }
 
 pub struct PacketHeader {
-    message_type: u8,
-    message_length: u16,
-    checksum: u16,
+    pub checksum: i16,
+    pub message_length: i16,
+    pub message_type: HeaderTypes,
+}
+
+#[derive(Debug)]
+pub struct InvalidHeaderError;
+
+impl fmt::Display for InvalidHeaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Invalid protocol header")
+    }
 }
 
 impl PacketHeader {
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, InvalidHeaderError> {
         if bytes.len() < 5 {
-            return None;
+            return Err(InvalidHeaderError);
         }
 
-        return Some(Self {
-            message_type: bytes[0],
-            message_length: u16::from_be_bytes([bytes[1], bytes[2]]),
-            checksum: u16::from_be_bytes([bytes[3], bytes[4]]),
-        });
-    }
+        match HeaderTypes::try_from(bytes[0]) {
+            Err(_) => return Err(InvalidHeaderError),
+            Ok(h_type) => {
+                let c_sum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
+                let m_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
 
-    pub fn convert(&self) -> Result<(HeaderTypes, i16, i32), Error> {
-        let h_type = HeaderTypes::try_from(self.message_type).expect("Invalid header type");
-        let m_length: i16 = self.message_length as i16;
-        let c_sum: i32 = self.checksum as i32;
-        return Ok((h_type, m_length, c_sum));
+                return Ok(Self {
+                    message_type: h_type,
+                    message_length: m_length,
+                    checksum: c_sum,
+                });
+            }
+        }
     }
 
     pub fn new(h_type: HeaderTypes, body: &[u8]) -> Vec<u8> {
@@ -66,9 +76,10 @@ impl PacketHeader {
 
 pub struct Protocol;
 impl Protocol {
-    pub fn create_response(h_type: HeaderTypes, body: &[u8]) -> Box<[u8]> {
+    pub fn create_packet(h_type: HeaderTypes, body: &[u8]) -> Box<[u8]> {
         let mut header = PacketHeader::new(h_type, body);
-        let v_body = body.to_vec();
+        let mut v_body = body.to_vec();
+        v_body.push(0x1A);
         header.extend_from_slice(&v_body);
         let slice: Box<[u8]> = header.into_boxed_slice();
         return slice;

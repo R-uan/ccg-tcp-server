@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Error};
+use std::io::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Vec2 {
@@ -19,8 +19,15 @@ pub struct PlayerState {
 }
 
 impl PlayerState {
-    pub fn forge_connection(p_body: &[u8]) -> Result<Self, Error> {
-        let fields: Vec<&str> = std::str::from_utf8(p_body)
+    /**
+    # Arguments
+    * `body`: An array of u8 bytes that contains the valid protocol body for a player connection request.
+
+    # Returns
+    * PlayerState with the data extracted from the protocol.
+    */
+    pub fn new(body: &[u8]) -> Result<Self, Error> {
+        let fields: Vec<&str> = std::str::from_utf8(body)
             .expect("Couldn't read bytes")
             .split("\n")
             .collect();
@@ -28,8 +35,6 @@ impl PlayerState {
         if fields.len() < 2 {
             return Err(Error::last_os_error());
         }
-
-        println!("{:?}", fields);
 
         return Ok(Self {
             id: fields[0].to_owned(),
