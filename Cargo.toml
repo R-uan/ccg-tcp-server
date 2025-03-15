@@ -1,5 +1,5 @@
 [package]
-name = "galactic-conqueror"
+name = "tcp-server"
 version = "0.1.0"
 edition = "2021"
 

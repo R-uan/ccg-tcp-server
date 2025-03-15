@@ -1,27 +1,27 @@
 use std::{
-    collections::HashMap,
     io::Error,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
 };
+
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::RwLock,
 };
 
 use crate::{
-    game::{game_state::GameState, player_state::PlayerState},
-    tcp::protocol::{PacketHeader, Protocol},
+    game::{
+        game_state::GameState,
+        player_state::{Player, SHARED_PLAYER_STATE},
+    },
+    tcp::protocol::{CheckSum, Protocol, ProtocolHeader},
 };
 
-use super::protocol::HeaderTypes;
+use super::protocol::ProtocolOperations;
 
 pub struct ServerInstance {
-    pub server_port: u16,
     pub socket: TcpListener,
     pub game_state: GameState,
-    pub player_state: Arc<RwLock<HashMap<String, PlayerState>>>,
 }
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
@@ -32,10 +32,8 @@ impl ServerInstance {
             Ok(tcp_stream) => {
                 println!("Server connection open: {port}");
                 Ok(ServerInstance {
-                    server_port: port,
                     socket: tcp_stream,
                     game_state: GameState::new_game(),
-                    player_state: Arc::new(RwLock::new(HashMap::new())),
                 })
             }
             Err(error) => Err(error),
@@ -55,26 +53,41 @@ impl ServerInstance {
             };
 
             println!("[Read]# Received {bytes_read} bytes from {addr}");
-            if let Ok(header) = PacketHeader::from_bytes(&buffer[..5]) {
-                match header.message_type {
-                    HeaderTypes::Connect => {
-                        if let Ok(player) = PlayerState::new(&buffer[6..bytes_read - 1]) {
+            if let Ok(header) = ProtocolHeader::from_bytes(&buffer[..5]) {
+                let protocol_body = &buffer[6..bytes_read - 1];
+
+                if CheckSum::check(&header.checksum, protocol_body) == false {
+                    eprint!("[Error] # Checksum check failed.");
+
+                    let e_body = b"Checksum failed";
+                    let e_response = Protocol::create_packet(ProtocolOperations::Err, e_body);
+
+                    if let Err(_) = c_stream.write_all(&e_response).await {
+                        eprint!("[Error] # Unable to write to {addr}");
+                        break;
+                    }
+                };
+
+                match header.operation {
+                    ProtocolOperations::Connect => {
+                        if let Ok(player) = Player::new(protocol_body, &addr) {
                             player_id = Some(player.id.clone());
-                            server.add_player(player).await;
+                            Player::add_player(player).await;
 
-                            let body = b"Player sucessfully connected";
+                            let r_body = b"Player sucessfully connected";
+                            let response = Protocol::create_packet(
+                                ProtocolOperations::PlayerConnected,
+                                r_body,
+                            );
 
-                            let e_response =
-                                Protocol::create_packet(HeaderTypes::PlayerConnected, body);
-
-                            if let Err(_) = c_stream.write_all(&e_response).await {
+                            if let Err(_) = c_stream.write_all(&response).await {
                                 eprint!("[Error] # Unable to write to {addr}");
                                 break;
                             }
                         } else {
-                            let body = b"Unable to connect player";
-
-                            let e_response = Protocol::create_packet(HeaderTypes::Err, body);
+                            let r_body = b"Unable to connect player";
+                            let e_response =
+                                Protocol::create_packet(ProtocolOperations::Err, r_body);
 
                             if let Err(_) = c_stream.write_all(&e_response).await {
                                 eprint!("[Error] # Unable to write to {addr}");
@@ -87,19 +100,30 @@ impl ServerInstance {
                             );
                         }
                     }
+                    ProtocolOperations::Close => {
+                        c_stream.write_all(b"0x00").await.unwrap_or_default();
+                        break;
+                    }
+                    ProtocolOperations::PlayerMovement => {
+                        if let Some(id) = &player_id {
+                            if let Some(player) = SHARED_PLAYER_STATE.write().await.get_mut(id) {
+                                player.update_position(protocol_body);
+                            };
+                        }
+                    }
                     _ => {
-                        let body = b"Invalid header";
-                        let response = Protocol::create_packet(HeaderTypes::Err, body);
-                        if let Err(_) = c_stream.write_all(&response).await {
+                        let e_body = b"Invalid header";
+                        let e_response = Protocol::create_packet(ProtocolOperations::Err, e_body);
+                        if let Err(_) = c_stream.write_all(&e_response).await {
                             eprint!("[Error] # Unable to write to {addr}");
                             break;
                         };
                     }
                 }
             } else {
-                let body = b"Invalid header";
-                let response = Protocol::create_packet(HeaderTypes::Err, body);
-                if let Err(_) = c_stream.write_all(&response).await {
+                let e_body = b"Invalid header";
+                let e_repose = Protocol::create_packet(ProtocolOperations::Err, e_body);
+                if let Err(_) = c_stream.write_all(&e_repose).await {
                     eprint!("[Error] # Unable to write to {addr}");
                     break;
                 };
@@ -108,7 +132,7 @@ impl ServerInstance {
 
         println!("[Close] # Closing connection with {addr}");
         if let Some(player_id) = player_id {
-            server.remove_player(&player_id).await;
+            Player::remove_player(&player_id).await;
         }
     }
 
@@ -120,15 +144,5 @@ impl ServerInstance {
                 tokio::spawn(ServerInstance::handle_client(server_clone, c_stream, addr));
             }
         }
-    }
-
-    async fn add_player(&self, player: PlayerState) {
-        let mut players = self.player_state.write().await;
-        players.insert(player.id.clone(), player);
-    }
-
-    async fn remove_player(&self, id: &str) {
-        let mut players = self.player_state.write().await;
-        players.remove(id);
     }
 }
