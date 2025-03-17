@@ -6,8 +6,10 @@ pub enum ProtocolOperations {
     Close = 0x00,
     Connect = 0x01,
     Update = 0x02,
-    PlayerConnected = 0x03,
-    PlayerMovement = 0x10,
+
+    PlayerConnected = 0x10,
+    PlayerMovement = 0x11,
+
     Err = 0xFF,
 }
 
@@ -16,8 +18,11 @@ impl TryFrom<u8> for ProtocolOperations {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
+            0x00 => Ok(ProtocolOperations::Close),
             0x01 => Ok(ProtocolOperations::Connect),
             0x02 => Ok(ProtocolOperations::Update),
+            0x03 => Ok(ProtocolOperations::PlayerConnected),
+            0x10 => Ok(ProtocolOperations::PlayerMovement),
             _ => Err(()),
         }
     }
@@ -100,6 +105,7 @@ impl CheckSum {
 
     pub fn check(checksum: &i16, data: &[u8]) -> bool {
         let check = CheckSum::new(data);
+        println!("[Info] # Comparing checksum: {check} : {checksum}");
         return *checksum == check as i16;
     }
 }
