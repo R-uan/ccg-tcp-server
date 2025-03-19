@@ -1,11 +1,14 @@
 use std::fmt::{self};
 
+pub struct Protocol {}
+pub struct CheckSum {}
+
 #[repr(u8)]
 #[derive(Debug, PartialEq)]
-pub enum ProtocolOperations {
+pub enum ProtocolType {
     Close = 0x00,
     Connect = 0x01,
-    Update = 0x02,
+    GameState = 0x02,
 
     PlayerConnected = 0x10,
     PlayerMovement = 0x11,
@@ -13,16 +16,16 @@ pub enum ProtocolOperations {
     Err = 0xFF,
 }
 
-impl TryFrom<u8> for ProtocolOperations {
+impl TryFrom<u8> for ProtocolType {
     type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x00 => Ok(ProtocolOperations::Close),
-            0x01 => Ok(ProtocolOperations::Connect),
-            0x02 => Ok(ProtocolOperations::Update),
-            0x03 => Ok(ProtocolOperations::PlayerConnected),
-            0x10 => Ok(ProtocolOperations::PlayerMovement),
+            0x00 => Ok(ProtocolType::Close),
+            0x01 => Ok(ProtocolType::Connect),
+            0x02 => Ok(ProtocolType::GameState),
+            0x03 => Ok(ProtocolType::PlayerConnected),
+            0x10 => Ok(ProtocolType::PlayerMovement),
             _ => Err(()),
         }
     }
@@ -31,7 +34,7 @@ impl TryFrom<u8> for ProtocolOperations {
 pub struct ProtocolHeader {
     pub checksum: i16,
     pub message_length: i16,
-    pub operation: ProtocolOperations,
+    pub operation: ProtocolType,
 }
 
 #[derive(Debug)]
@@ -49,7 +52,7 @@ impl ProtocolHeader {
             return Err(InvalidHeaderError);
         }
 
-        match ProtocolOperations::try_from(bytes[0]) {
+        match ProtocolType::try_from(bytes[0]) {
             Err(_) => return Err(InvalidHeaderError),
             Ok(h_type) => {
                 let c_sum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
@@ -64,15 +67,15 @@ impl ProtocolHeader {
         }
     }
 
-    pub fn new(h_type: ProtocolOperations, body: &[u8]) -> Vec<u8> {
-        let header_type = h_type as u8;
-        let b_len = body.len() as u16;
-        let checksum = CheckSum::new(body);
+    pub fn new(operation: ProtocolType, payload: &[u8]) -> Vec<u8> {
+        let header_type = operation as u8;
+        let payload_len = payload.len() as u16;
+        let checksum = CheckSum::new(payload);
 
         return vec![
             header_type,
-            (b_len >> 8) as u8,
-            (b_len & 0xFF) as u8,
+            ((payload_len >> 8) & 0xFF) as u8,
+            (payload_len & 0xFF) as u8,
             ((checksum >> 8) & 0xFF) as u8,
             (checksum & 0xFF) as u8,
             0x0A,
@@ -80,31 +83,28 @@ impl ProtocolHeader {
     }
 }
 
-pub struct Protocol;
 impl Protocol {
-    pub fn create_packet(h_type: ProtocolOperations, body: &[u8]) -> Box<[u8]> {
-        let mut header = ProtocolHeader::new(h_type, body);
-        let mut v_body = body.to_vec();
-        v_body.push(0x1A);
-        header.extend_from_slice(&v_body);
-        let slice: Box<[u8]> = header.into_boxed_slice();
-        return slice;
+    pub fn create_packet(operation: ProtocolType, payload: &[u8]) -> Box<[u8]> {
+        let mut header = ProtocolHeader::new(operation, payload);
+        let payload = payload.to_vec();
+        header.extend_from_slice(&payload);
+        let bytes: Box<[u8]> = header.into_boxed_slice();
+        return bytes;
     }
 }
 
-pub struct CheckSum;
-
 impl CheckSum {
-    pub fn new(data: &[u8]) -> u16 {
+    pub fn new(payload: &[u8]) -> u16 {
         let mut checksum: u16 = 0;
-        for &byte in data {
+        for &byte in payload {
             checksum ^= byte as u16;
         }
+
         return checksum;
     }
 
-    pub fn check(checksum: &i16, data: &[u8]) -> bool {
-        let check = CheckSum::new(data);
+    pub fn check(checksum: &i16, payload: &[u8]) -> bool {
+        let check = CheckSum::new(payload);
         println!("[Info] # Comparing checksum: {check} : {checksum}");
         return *checksum == check as i16;
     }

@@ -4,7 +4,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{
-        broadcast::{self, Receiver},
+        broadcast::{self, Receiver, Sender},
         Mutex,
     },
     time,
@@ -18,7 +18,7 @@ use crate::{
     tcp::protocol::{CheckSum, Protocol, ProtocolHeader},
 };
 
-use super::protocol::ProtocolOperations;
+use super::protocol::ProtocolType;
 
 pub struct ServerInstance {
     pub socket: TcpListener,
@@ -28,6 +28,10 @@ pub struct ServerInstance {
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 impl ServerInstance {
+    ///
+    /// Creates a new ServerInstance with:
+    /// * A TCPListener bound to 127.0.0.1 and the given port
+    /// * A GameState with default initial values
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
         return match TcpListener::bind((HOST, port)).await {
             Ok(tcp_stream) => {
@@ -41,12 +45,56 @@ impl ServerInstance {
         };
     }
 
+    ///
+    /// This function does two things:
+    /// * Accepts incoming requests from the socket (TCPListener) and sends them to the `handle_client`.
+    /// * Fires up the `write_state_update` to periodically send the GameState to connected clients (must have at least
+    /// one player connected)
+    pub async fn run(self: Arc<Self>) {
+        let (tx, _) = broadcast::channel::<Vec<u8>>(10);
+        let transmiter = Arc::new(Mutex::new(tx));
+
+        tokio::spawn({
+            let tx = Arc::clone(&transmiter);
+            async move { ServerInstance::write_state_update(tx).await }
+        });
+
+        loop {
+            let tx = Arc::clone(&transmiter);
+            if let Ok((c_stream, addr)) = self.socket.accept().await {
+                println!("[Incoming] # {addr}");
+                let tx = tx.lock().await;
+                let rx = tx.subscribe();
+                let server_clone = Arc::clone(&self);
+                tokio::spawn(ServerInstance::handle_client(server_clone, c_stream, rx));
+            }
+        }
+    }
+
+    ///
+    /// Periodically sends the game state connected clients.
+    async fn write_state_update(tx: Arc<Mutex<Sender<Vec<u8>>>>) {
+        let mut interval = time::interval(std::time::Duration::from_millis(1000));
+        loop {
+            interval.tick().await;
+            let players = SHARED_PLAYER_STATE.read().await;
+
+            if players.len() > 0 {
+                println!("[Info] # Sending game state update");
+                let body = b"GameState";
+                let game_state = Protocol::create_packet(ProtocolType::GameState, body);
+                let tx = tx.lock().await;
+                let _ = tx.send(game_state.to_vec());
+            }
+        }
+    }
+
     async fn handle_client(
         server: Arc<ServerInstance>,
         stream: TcpStream,
         mut rx: Receiver<Vec<u8>>,
     ) {
-        let (mut read_stream, mut write_stream) = stream.into_split();
+        let (mut read_stream, write_stream) = stream.into_split();
         let write_stream = Arc::new(Mutex::new(write_stream));
 
         tokio::spawn({
@@ -66,18 +114,17 @@ impl ServerInstance {
 
                     println!("[Read]# Received {bytes_read} bytes from {addr}");
                     if let Ok(header) = ProtocolHeader::from_bytes(&buffer[..5]) {
-                        let protocol_body = &buffer[6..bytes_read];
+                        let payload = &buffer[6..bytes_read];
 
-                        if CheckSum::check(&header.checksum, protocol_body) == false {
+                        if CheckSum::check(&header.checksum, payload) == false {
                             eprintln!("[Error] # Checksum check failed.");
 
-                            let e_body = b"Checksum failed";
-                            let e_response =
-                                Protocol::create_packet(ProtocolOperations::Err, e_body);
+                            let payload = b"Checksum failed";
+                            let packet = Protocol::create_packet(ProtocolType::Err, payload);
 
                             {
                                 let mut w_stream = write_stream.lock().await;
-                                if let Err(_) = w_stream.write_all(&e_response).await {
+                                if let Err(_) = w_stream.write_all(&packet).await {
                                     eprint!("[Error] # Unable to write to {addr}");
                                     break;
                                 }
@@ -85,15 +132,15 @@ impl ServerInstance {
                         };
 
                         match header.operation {
-                            ProtocolOperations::Connect => {
-                                if let Ok(player) = Player::new(protocol_body, &addr) {
+                            ProtocolType::Connect => {
+                                if let Ok(player) = Player::new(payload, &addr) {
                                     player_id = Some(player.id.clone());
                                     Player::add_player(player).await;
 
-                                    let r_body = b"Player sucessfully connected";
+                                    let payload = b"Player sucessfully connected";
                                     let response = Protocol::create_packet(
-                                        ProtocolOperations::PlayerConnected,
-                                        r_body,
+                                        ProtocolType::PlayerConnected,
+                                        payload,
                                     );
 
                                     {
@@ -104,9 +151,9 @@ impl ServerInstance {
                                         }
                                     }
                                 } else {
-                                    let r_body = b"Unable to connect player";
+                                    let payload = b"Unable to connect player";
                                     let e_response =
-                                        Protocol::create_packet(ProtocolOperations::Err, r_body);
+                                        Protocol::create_packet(ProtocolType::Err, payload);
 
                                     let mut w_stream = write_stream.lock().await;
                                     if let Err(_) = w_stream.write_all(&e_response).await {
@@ -116,31 +163,29 @@ impl ServerInstance {
 
                                     attempts += 1;
                                     eprint!(
-                                "[Error] # Unable to connect player {addr}...Attempts: {attempts}"
-                            );
+                                        "[Error] # Unable to connect {addr}...Attempts: {attempts}"
+                                    );
                                 }
                             }
-                            ProtocolOperations::Close => {
+                            ProtocolType::Close => {
                                 {
                                     let mut w_stream = write_stream.lock().await;
                                     w_stream.write_all(b"0x00").await.unwrap_or_default();
                                 }
                                 break;
                             }
-                            ProtocolOperations::PlayerMovement => {
+                            ProtocolType::PlayerMovement => {
                                 if let Some(id) = &player_id {
                                     if let Some(player) =
                                         SHARED_PLAYER_STATE.write().await.get_mut(id)
                                     {
-                                        player.update_position(protocol_body);
+                                        player.update_position(payload);
                                     };
                                 }
                             }
                             _ => {
                                 let e_body = b"Invalid header";
-                                let e_response =
-                                    Protocol::create_packet(ProtocolOperations::Err, e_body);
-
+                                let e_response = Protocol::create_packet(ProtocolType::Err, e_body);
                                 {
                                     let mut w_stream = write_stream.lock().await;
                                     if let Err(_) = w_stream.write_all(&e_response).await {
@@ -152,8 +197,7 @@ impl ServerInstance {
                         }
                     } else {
                         let e_body = b"Invalid header";
-                        let e_repose = Protocol::create_packet(ProtocolOperations::Err, e_body);
-
+                        let e_repose = Protocol::create_packet(ProtocolType::Err, e_body);
                         {
                             let mut w_stream = write_stream.lock().await;
                             if let Err(_) = w_stream.write_all(&e_repose).await {
@@ -183,41 +227,5 @@ impl ServerInstance {
                 }
             }
         });
-    }
-
-    pub async fn run(self: Arc<Self>) {
-        let (tx, _) = broadcast::channel::<Vec<u8>>(10);
-        let transmiter = Arc::new(Mutex::new(tx));
-
-        tokio::spawn({
-            let tx = Arc::clone(&transmiter);
-            async move {
-                let mut interval = time::interval(std::time::Duration::from_millis(1000));
-                loop {
-                    interval.tick().await;
-                    let players = SHARED_PLAYER_STATE.read().await;
-
-                    if players.len() > 0 {
-                        println!("Update: {}", players.len());
-                        // Placeholder update
-                        let body = b"update";
-                        let game_state = Protocol::create_packet(ProtocolOperations::Update, body);
-                        let tx = tx.lock().await;
-                        let _ = tx.send(game_state.to_vec());
-                    }
-                }
-            }
-        });
-
-        loop {
-            let tx = Arc::clone(&transmiter);
-            if let Ok((c_stream, addr)) = self.socket.accept().await {
-                println!("[Incoming] # {addr}");
-                let tx = tx.lock().await;
-                let rx = tx.subscribe();
-                let server_clone = Arc::clone(&self);
-                tokio::spawn(ServerInstance::handle_client(server_clone, c_stream, rx));
-            }
-        }
     }
 }
