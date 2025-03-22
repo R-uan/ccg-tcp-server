@@ -105,7 +105,6 @@ impl CheckSum {
 
     pub fn check(checksum: &i16, payload: &[u8]) -> bool {
         let check = CheckSum::new(payload);
-        println!("[Info] # Comparing checksum: {check} : {checksum}");
         return *checksum == check as i16;
     }
 }

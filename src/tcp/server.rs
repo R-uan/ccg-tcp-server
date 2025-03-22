@@ -1,5 +1,6 @@
 use std::{io::Error, net::Ipv4Addr, sync::Arc};
 
+use log::{info, Log};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -16,6 +17,7 @@ use crate::{
         player_state::{Player, SHARED_PLAYER_STATE},
     },
     tcp::protocol::{CheckSum, Protocol, ProtocolHeader},
+    utils::logger::Logger,
 };
 
 use super::protocol::ProtocolType;
@@ -35,7 +37,7 @@ impl ServerInstance {
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
         return match TcpListener::bind((HOST, port)).await {
             Ok(tcp_stream) => {
-                println!("Server connection open: {port}");
+                Logger::debug(&format!("Server listening on port {port}"));
                 Ok(ServerInstance {
                     socket: tcp_stream,
                     game_state: GameState::new_game(),
@@ -62,7 +64,7 @@ impl ServerInstance {
         loop {
             let tx = Arc::clone(&transmiter);
             if let Ok((c_stream, addr)) = self.socket.accept().await {
-                println!("[Incoming] # {addr}");
+                Logger::info(&format!("{addr}: received request"));
                 let tx = tx.lock().await;
                 let rx = tx.subscribe();
                 let server_clone = Arc::clone(&self);
@@ -80,7 +82,7 @@ impl ServerInstance {
             let players = SHARED_PLAYER_STATE.read().await;
 
             if players.len() > 0 {
-                println!("[Info] # Sending game state update");
+                Logger::info(&format!("Sending game state"));
                 let body = b"GameState";
                 let game_state = Protocol::create_packet(ProtocolType::GameState, body);
                 let tx = tx.lock().await;
@@ -112,12 +114,12 @@ impl ServerInstance {
                         Err(_) => break,
                     };
 
-                    println!("[Read]# Received {bytes_read} bytes from {addr}");
+                    Logger::info(&format!("{addr}: received {bytes_read} bytes"));
                     if let Ok(header) = ProtocolHeader::from_bytes(&buffer[..5]) {
                         let payload = &buffer[6..bytes_read];
 
                         if CheckSum::check(&header.checksum, payload) == false {
-                            eprintln!("[Error] # Checksum check failed.");
+                            Logger::error(&format!("{addr}: checksum check failed"));
 
                             let payload = b"Checksum failed";
                             let packet = Protocol::create_packet(ProtocolType::Err, payload);
@@ -125,7 +127,7 @@ impl ServerInstance {
                             {
                                 let mut w_stream = write_stream.lock().await;
                                 if let Err(_) = w_stream.write_all(&packet).await {
-                                    eprint!("[Error] # Unable to write to {addr}");
+                                    Logger::error(&format!("{addr}: unable to write to"));
                                     break;
                                 }
                             }
@@ -146,7 +148,7 @@ impl ServerInstance {
                                     {
                                         let mut w_stream = write_stream.lock().await;
                                         if let Err(_) = w_stream.write_all(&response).await {
-                                            eprint!("[Error] # Unable to write to {addr}");
+                                            Logger::error(&format!("{addr}: unable to write to"));
                                             break;
                                         }
                                     }
@@ -157,14 +159,12 @@ impl ServerInstance {
 
                                     let mut w_stream = write_stream.lock().await;
                                     if let Err(_) = w_stream.write_all(&e_response).await {
-                                        eprint!("[Error] # Unable to write to {addr}");
+                                        Logger::error(&format!("{addr}: unable to write to"));
                                         break;
                                     }
 
                                     attempts += 1;
-                                    eprint!(
-                                        "[Error] # Unable to connect {addr}...Attempts: {attempts}"
-                                    );
+                                    Logger::error(&format!("{addr}: unable to connect player"));
                                 }
                             }
                             ProtocolType::Close => {
@@ -189,7 +189,7 @@ impl ServerInstance {
                                 {
                                     let mut w_stream = write_stream.lock().await;
                                     if let Err(_) = w_stream.write_all(&e_response).await {
-                                        eprint!("[Error] # Unable to write to {addr}");
+                                        Logger::error(&format!("{addr}: unable to write to"));
                                         break;
                                     };
                                 }
@@ -201,14 +201,14 @@ impl ServerInstance {
                         {
                             let mut w_stream = write_stream.lock().await;
                             if let Err(_) = w_stream.write_all(&e_repose).await {
-                                eprint!("[Error] # Unable to write to {addr}");
+                                Logger::error(&format!("{addr}: unable to write to"));
                                 break;
                             };
                         }
                     }
                 }
 
-                println!("[Close] # Closing connection with {addr}");
+                Logger::info(&format!("{addr}: closing connection"));
                 if let Some(player_id) = player_id {
                     Player::remove_player(&player_id).await;
                 }

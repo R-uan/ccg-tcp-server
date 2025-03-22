@@ -4,6 +4,7 @@ use tcp::server::ServerInstance;
 
 mod game;
 mod tcp;
+mod utils;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
