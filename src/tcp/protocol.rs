@@ -1,7 +1,12 @@
-use std::fmt::{self};
+use std::net::SocketAddr;
 
-pub struct Protocol {}
-pub struct CheckSum {}
+use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf, sync::MutexGuard};
+
+use crate::utils::{
+    checksum::CheckSum,
+    errors::{InvalidHeaderError, PackageWriteError},
+    logger::Logger,
+};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq)]
@@ -34,16 +39,7 @@ impl TryFrom<u8> for ProtocolType {
 pub struct ProtocolHeader {
     pub checksum: i16,
     pub message_length: i16,
-    pub operation: ProtocolType,
-}
-
-#[derive(Debug)]
-pub struct InvalidHeaderError;
-
-impl fmt::Display for InvalidHeaderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Invalid protocol header")
-    }
+    pub ptype: ProtocolType,
 }
 
 impl ProtocolHeader {
@@ -59,7 +55,7 @@ impl ProtocolHeader {
                 let m_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
 
                 return Ok(Self {
-                    operation: h_type,
+                    ptype: h_type,
                     message_length: m_length,
                     checksum: c_sum,
                 });
@@ -67,8 +63,8 @@ impl ProtocolHeader {
         }
     }
 
-    pub fn new(operation: ProtocolType, payload: &[u8]) -> Vec<u8> {
-        let header_type = operation as u8;
+    pub fn new(ptype: ProtocolType, payload: &[u8]) -> Vec<u8> {
+        let header_type = ptype as u8;
         let payload_len = payload.len() as u16;
         let checksum = CheckSum::new(payload);
 
@@ -83,28 +79,34 @@ impl ProtocolHeader {
     }
 }
 
-impl Protocol {
-    pub fn create_packet(operation: ProtocolType, payload: &[u8]) -> Box<[u8]> {
-        let mut header = ProtocolHeader::new(operation, payload);
-        let payload = payload.to_vec();
-        header.extend_from_slice(&payload);
-        let bytes: Box<[u8]> = header.into_boxed_slice();
-        return bytes;
-    }
+pub struct Protocol {
+    header: Vec<u8>,
+    payload: Vec<u8>,
 }
 
-impl CheckSum {
-    pub fn new(payload: &[u8]) -> u16 {
-        let mut checksum: u16 = 0;
-        for &byte in payload {
-            checksum ^= byte as u16;
-        }
-
-        return checksum;
+impl Protocol {
+    pub fn create_packet(ptype: ProtocolType, payload: &[u8]) -> Self {
+        let header = ProtocolHeader::new(ptype, payload);
+        let payload = payload.to_vec();
+        return Protocol { header, payload };
     }
 
-    pub fn check(checksum: &i16, payload: &[u8]) -> bool {
-        let check = CheckSum::new(payload);
-        return *checksum == check as i16;
+    fn wrap_packet(&self) -> Box<[u8]> {
+        let mut package = self.header.clone();
+        package.extend_from_slice(&self.payload);
+        return package.into_boxed_slice();
+    }
+
+    pub async fn send(
+        &self,
+        mut w_stream: MutexGuard<'_, OwnedWriteHalf>,
+        addr: &SocketAddr,
+    ) -> Result<(), PackageWriteError> {
+        let packet = self.wrap_packet();
+        if let Err(_) = w_stream.write_all(&packet).await {
+            Logger::error(&format!("{addr}: unable to send packet"));
+            return Err(PackageWriteError);
+        }
+        return Ok(());
     }
 }

@@ -1,6 +1,5 @@
 use std::{io::Error, net::Ipv4Addr, sync::Arc};
 
-use log::{info, Log};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -16,8 +15,8 @@ use crate::{
         game_state::GameState,
         player_state::{Player, SHARED_PLAYER_STATE},
     },
-    tcp::protocol::{CheckSum, Protocol, ProtocolHeader},
-    utils::logger::Logger,
+    tcp::protocol::{Protocol, ProtocolHeader},
+    utils::{checksum::CheckSum, logger::Logger},
 };
 
 use super::protocol::ProtocolType;
@@ -57,8 +56,9 @@ impl ServerInstance {
         let transmiter = Arc::new(Mutex::new(tx));
 
         tokio::spawn({
+            let server_clone = Arc::clone(&self);
             let tx = Arc::clone(&transmiter);
-            async move { ServerInstance::write_state_update(tx).await }
+            async move { ServerInstance::write_state_update(tx, server_clone).await }
         });
 
         loop {
@@ -67,15 +67,14 @@ impl ServerInstance {
                 Logger::info(&format!("{addr}: received request"));
                 let tx = tx.lock().await;
                 let rx = tx.subscribe();
-                let server_clone = Arc::clone(&self);
-                tokio::spawn(ServerInstance::handle_client(server_clone, c_stream, rx));
+                tokio::spawn(ServerInstance::handle_client(c_stream, rx));
             }
         }
     }
 
     ///
     /// Periodically sends the game state connected clients.
-    async fn write_state_update(tx: Arc<Mutex<Sender<Vec<u8>>>>) {
+    async fn write_state_update(tx: Arc<Mutex<Sender<Vec<u8>>>>, server: Arc<ServerInstance>) {
         let mut interval = time::interval(std::time::Duration::from_millis(1000));
         loop {
             interval.tick().await;
@@ -91,11 +90,7 @@ impl ServerInstance {
         }
     }
 
-    async fn handle_client(
-        server: Arc<ServerInstance>,
-        stream: TcpStream,
-        mut rx: Receiver<Vec<u8>>,
-    ) {
+    async fn handle_client(stream: TcpStream, mut rx: Receiver<Vec<u8>>) {
         let (mut read_stream, write_stream) = stream.into_split();
         let write_stream = Arc::new(Mutex::new(write_stream));
 
@@ -121,50 +116,47 @@ impl ServerInstance {
                         if CheckSum::check(&header.checksum, payload) == false {
                             Logger::error(&format!("{addr}: checksum check failed"));
 
-                            let payload = b"Checksum failed";
-                            let packet = Protocol::create_packet(ProtocolType::Err, payload);
-
+                            let payload = b"checksum failed";
+                            let mut w_stream = write_stream.lock().await;
+                            if let Err(_) = Protocol::create_packet(ProtocolType::Err, payload)
+                                .send(w_stream, &addr)
+                                .await
                             {
-                                let mut w_stream = write_stream.lock().await;
-                                if let Err(_) = w_stream.write_all(&packet).await {
-                                    Logger::error(&format!("{addr}: unable to write to"));
-                                    break;
-                                }
-                            }
+                                break;
+                            };
                         };
 
-                        match header.operation {
+                        match header.ptype {
                             ProtocolType::Connect => {
                                 if let Ok(player) = Player::new(payload, &addr) {
                                     player_id = Some(player.id.clone());
                                     Player::add_player(player).await;
 
-                                    let payload = b"Player sucessfully connected";
-                                    let response = Protocol::create_packet(
+                                    let payload = b"player sucessfully connected";
+                                    let mut w_stream = write_stream.lock().await;
+                                    if let Err(_) = Protocol::create_packet(
                                         ProtocolType::PlayerConnected,
                                         payload,
-                                    );
-
+                                    )
+                                    .send(w_stream, &addr)
+                                    .await
                                     {
-                                        let mut w_stream = write_stream.lock().await;
-                                        if let Err(_) = w_stream.write_all(&response).await {
-                                            Logger::error(&format!("{addr}: unable to write to"));
-                                            break;
-                                        }
+                                        break;
                                     }
                                 } else {
-                                    let payload = b"Unable to connect player";
-                                    let e_response =
-                                        Protocol::create_packet(ProtocolType::Err, payload);
+                                    Logger::error(&format!("{addr}: unable to connect player"));
 
+                                    let payload = b"unable to connect player";
                                     let mut w_stream = write_stream.lock().await;
-                                    if let Err(_) = w_stream.write_all(&e_response).await {
-                                        Logger::error(&format!("{addr}: unable to write to"));
+                                    if let Err(_) =
+                                        Protocol::create_packet(ProtocolType::Err, payload)
+                                            .send(w_stream, &addr)
+                                            .await
+                                    {
                                         break;
                                     }
 
                                     attempts += 1;
-                                    Logger::error(&format!("{addr}: unable to connect player"));
                                 }
                             }
                             ProtocolType::Close => {
@@ -184,26 +176,24 @@ impl ServerInstance {
                                 }
                             }
                             _ => {
-                                let e_body = b"Invalid header";
-                                let e_response = Protocol::create_packet(ProtocolType::Err, e_body);
+                                let payload = b"invalid header";
+                                let w_stream = write_stream.lock().await;
+                                if let Err(_) = Protocol::create_packet(ProtocolType::Err, payload)
+                                    .send(w_stream, &addr)
+                                    .await
                                 {
-                                    let mut w_stream = write_stream.lock().await;
-                                    if let Err(_) = w_stream.write_all(&e_response).await {
-                                        Logger::error(&format!("{addr}: unable to write to"));
-                                        break;
-                                    };
+                                    break;
                                 }
                             }
                         }
                     } else {
-                        let e_body = b"Invalid header";
-                        let e_repose = Protocol::create_packet(ProtocolType::Err, e_body);
+                        let payload = b"invalid header";
+                        let w_stream = write_stream.lock().await;
+                        if let Err(_) = Protocol::create_packet(ProtocolType::Err, payload)
+                            .send(w_stream, &addr)
+                            .await
                         {
-                            let mut w_stream = write_stream.lock().await;
-                            if let Err(_) = w_stream.write_all(&e_repose).await {
-                                Logger::error(&format!("{addr}: unable to write to"));
-                                break;
-                            };
+                            break;
                         }
                     }
                 }
@@ -223,7 +213,7 @@ impl ServerInstance {
                     if write_guard.write_all(&game_state).await.is_err() {
                         break; // Client disconnected
                     }
-                    // Write operation is done, and the lock is released
+                    // Write ptype is done, and the lock is released
                 }
             }
         });
