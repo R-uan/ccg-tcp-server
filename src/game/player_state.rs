@@ -21,7 +21,7 @@ impl Vec2 {
 
 type SharedPlayerState = Arc<RwLock<HashMap<String, Player>>>;
 
-pub static SHARED_PLAYER_STATE: LazyLock<SharedPlayerState> =
+pub static PLAYER_STATE: LazyLock<SharedPlayerState> =
     LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub struct Player {
@@ -58,19 +58,19 @@ impl Player {
     }
 
     pub async fn add_player(player: Player) {
-        let mut players = SHARED_PLAYER_STATE.write().await;
+        let mut players = PLAYER_STATE.write().await;
         players.insert(player.id.clone(), player);
     }
 
     pub async fn remove_player(id: &str) {
-        let mut players = SHARED_PLAYER_STATE.write().await;
+        let mut players = PLAYER_STATE.write().await;
         players.remove(id);
     }
 
-    pub fn update_position(&mut self, bytes: &[u8]) {
-        if bytes.len() == 4 {
-            let x = u16::from_be_bytes([bytes[0], bytes[1]]);
-            let y = u16::from_be_bytes([bytes[2], bytes[2]]);
+    pub fn update_position(&mut self, payload: &[u8]) {
+        if payload.len() == 4 {
+            let x = u16::from_be_bytes([payload[0], payload[1]]);
+            let y = u16::from_be_bytes([payload[2], payload[2]]);
 
             self.position.x = x as f32;
             self.position.y = y as f32;

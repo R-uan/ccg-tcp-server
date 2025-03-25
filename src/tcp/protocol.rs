@@ -9,14 +9,16 @@ use crate::utils::{
 };
 
 #[repr(u8)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolType {
     Close = 0x00,
     Connect = 0x01,
     GameState = 0x02,
 
-    PlayerConnected = 0x10,
-    PlayerMovement = 0x11,
+    PConnect = 0x10,
+    PDisconnect = 0x11,
+    PMovement = 0x12,
+    PAttack = 0x13,
 
     Err = 0xFF,
 }
@@ -29,8 +31,10 @@ impl TryFrom<u8> for ProtocolType {
             0x00 => Ok(ProtocolType::Close),
             0x01 => Ok(ProtocolType::Connect),
             0x02 => Ok(ProtocolType::GameState),
-            0x03 => Ok(ProtocolType::PlayerConnected),
-            0x10 => Ok(ProtocolType::PlayerMovement),
+            0x10 => Ok(ProtocolType::PConnect),
+            0x11 => Ok(ProtocolType::PDisconnect),
+            0x12 => Ok(ProtocolType::PMovement),
+            0x13 => Ok(ProtocolType::PAttack),
             _ => Err(()),
         }
     }
@@ -38,11 +42,34 @@ impl TryFrom<u8> for ProtocolType {
 
 pub struct ProtocolHeader {
     pub checksum: i16,
-    pub message_length: i16,
-    pub ptype: ProtocolType,
+    pub payload_length: i16,
+    pub header_type: ProtocolType,
 }
 
 impl ProtocolHeader {
+    pub fn new(header_type: ProtocolType, payload: &[u8]) -> Self {
+        return Self {
+            checksum: CheckSum::new(payload) as i16,
+            payload_length: payload.len() as i16,
+            header_type,
+        };
+    }
+
+    pub fn wrap_header(&self) -> Box<[u8]> {
+        let checksum: u16 = self.checksum as u16;
+        let payload_length: u16 = self.payload_length as u16;
+        let header_type: u8 = self.header_type.to_owned() as u8;
+
+        return Box::new([
+            header_type,
+            ((payload_length >> 8) & 0xFF) as u8,
+            (payload_length & 0xFF) as u8,
+            ((checksum >> 8) & 0xFF) as u8,
+            (checksum & 0xFF) as u8,
+            0x0A,
+        ]);
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, InvalidHeaderError> {
         if bytes.len() < 5 {
             return Err(InvalidHeaderError);
@@ -50,51 +77,46 @@ impl ProtocolHeader {
 
         match ProtocolType::try_from(bytes[0]) {
             Err(_) => return Err(InvalidHeaderError),
-            Ok(h_type) => {
-                let c_sum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
-                let m_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
+            Ok(header_type) => {
+                let checksum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
+                let payload_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
 
                 return Ok(Self {
-                    ptype: h_type,
-                    message_length: m_length,
-                    checksum: c_sum,
+                    header_type,
+                    payload_length,
+                    checksum,
                 });
             }
         }
     }
-
-    pub fn new(ptype: ProtocolType, payload: &[u8]) -> Vec<u8> {
-        let header_type = ptype as u8;
-        let payload_len = payload.len() as u16;
-        let checksum = CheckSum::new(payload);
-
-        return vec![
-            header_type,
-            ((payload_len >> 8) & 0xFF) as u8,
-            (payload_len & 0xFF) as u8,
-            ((checksum >> 8) & 0xFF) as u8,
-            (checksum & 0xFF) as u8,
-            0x0A,
-        ];
-    }
 }
 
-pub struct Protocol {
-    header: Vec<u8>,
-    payload: Vec<u8>,
+pub struct Packet {
+    pub header: ProtocolHeader,
+    pub payload: Box<[u8]>,
 }
 
-impl Protocol {
-    pub fn create_packet(ptype: ProtocolType, payload: &[u8]) -> Self {
-        let header = ProtocolHeader::new(ptype, payload);
-        let payload = payload.to_vec();
-        return Protocol { header, payload };
+impl Packet {
+    pub fn parse(protocol: &[u8]) -> Result<Self, InvalidHeaderError> {
+        let header = ProtocolHeader::from_bytes(&protocol[..5])?;
+        let payload = protocol[6..].to_owned().into_boxed_slice();
+        return Ok(Self { header, payload });
     }
 
-    fn wrap_packet(&self) -> Box<[u8]> {
-        let mut package = self.header.clone();
-        package.extend_from_slice(&self.payload);
-        return package.into_boxed_slice();
+    pub fn new(header_type: ProtocolType, payload: &[u8]) -> Self {
+        let header = ProtocolHeader::new(header_type, payload);
+        let payload = payload.to_vec().into_boxed_slice();
+        return Self { header, payload };
+    }
+
+    pub fn wrap_packet(&self) -> Box<[u8]> {
+        let header = self.header.wrap_header();
+        let mut packet = Vec::with_capacity(header.len() + self.payload.len());
+
+        packet.extend_from_slice(&header);
+        packet.extend_from_slice(&self.payload);
+
+        packet.into_boxed_slice()
     }
 
     pub async fn send(
@@ -107,6 +129,7 @@ impl Protocol {
             Logger::error(&format!("{addr}: unable to send packet"));
             return Err(PackageWriteError);
         }
+
         return Ok(());
     }
 }

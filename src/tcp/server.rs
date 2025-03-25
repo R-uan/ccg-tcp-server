@@ -13,26 +13,25 @@ use tokio::{
 use crate::{
     game::{
         game_state::GameState,
-        player_state::{Player, SHARED_PLAYER_STATE},
+        player_state::{Player, PLAYER_STATE},
     },
-    tcp::protocol::{Protocol, ProtocolHeader},
     utils::{checksum::CheckSum, logger::Logger},
 };
 
-use super::protocol::ProtocolType;
+use super::protocol::{Packet, ProtocolType};
+static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 pub struct ServerInstance {
     pub socket: TcpListener,
     pub game_state: GameState,
 }
 
-static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
-
 impl ServerInstance {
-    ///
-    /// Creates a new ServerInstance with:
-    /// * A TCPListener bound to 127.0.0.1 and the given port
-    /// * A GameState with default initial values
+    /**
+        Creates a new ServerInstance with:
+        * A TCPListener bound to 127.0.0.1 and the given port
+        * A GameState with default initial values
+    */
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
         return match TcpListener::bind((HOST, port)).await {
             Ok(tcp_stream) => {
@@ -46,11 +45,12 @@ impl ServerInstance {
         };
     }
 
-    ///
-    /// This function does two things:
-    /// * Accepts incoming requests from the socket (TCPListener) and sends them to the `handle_client`.
-    /// * Fires up the `write_state_update` to periodically send the GameState to connected clients (must have at least
-    /// one player connected)
+    /**
+        This function does two things:
+        * Accepts incoming requests from the socket (TCPListener) and sends them to the `handle_client`.
+        * Fires up the `write_state_update` to periodically send the GameState to connected clients (must have at least
+        one player connected)
+    */
     pub async fn run(self: Arc<Self>) {
         let (tx, _) = broadcast::channel::<Vec<u8>>(10);
         let transmiter = Arc::new(Mutex::new(tx));
@@ -72,18 +72,19 @@ impl ServerInstance {
         }
     }
 
-    ///
-    /// Periodically sends the game state connected clients.
+    /**
+        Periodically sends the game state connected clients.
+    */
     async fn write_state_update(tx: Arc<Mutex<Sender<Vec<u8>>>>, server: Arc<ServerInstance>) {
         let mut interval = time::interval(std::time::Duration::from_millis(1000));
         loop {
             interval.tick().await;
-            let players = SHARED_PLAYER_STATE.read().await;
+            let players = PLAYER_STATE.read().await;
 
             if players.len() > 0 {
                 Logger::info(&format!("Sending game state"));
-                let body = b"GameState";
-                let game_state = Protocol::create_packet(ProtocolType::GameState, body);
+                let payload = server.game_state.to_bytes();
+                let game_state = Packet::new(ProtocolType::GameState, &payload).wrap_packet();
                 let tx = tx.lock().await;
                 let _ = tx.send(game_state.to_vec());
             }
@@ -97,7 +98,6 @@ impl ServerInstance {
         tokio::spawn({
             let write_stream = Arc::clone(&write_stream);
             async move {
-                let mut attempts = 0;
                 let mut buffer = [0; 1024];
                 let mut player_id: Option<String> = None;
                 let addr = read_stream.peer_addr().unwrap();
@@ -110,75 +110,68 @@ impl ServerInstance {
                     };
 
                     Logger::info(&format!("{addr}: received {bytes_read} bytes"));
-                    if let Ok(header) = ProtocolHeader::from_bytes(&buffer[..5]) {
-                        let payload = &buffer[6..bytes_read];
 
-                        if CheckSum::check(&header.checksum, payload) == false {
+                    if let Ok(packet) = Packet::parse(&buffer[..bytes_read]) {
+                        println!("{:?}", packet.payload);
+                        if CheckSum::check(&packet.header.checksum, &packet.payload) == false {
                             Logger::error(&format!("{addr}: checksum check failed"));
 
                             let payload = b"checksum failed";
-                            let mut w_stream = write_stream.lock().await;
-                            if let Err(_) = Protocol::create_packet(ProtocolType::Err, payload)
+                            let w_stream = write_stream.lock().await;
+                            if let Err(_) = Packet::new(ProtocolType::Err, payload)
                                 .send(w_stream, &addr)
                                 .await
                             {
-                                break;
+                                continue;
                             };
                         };
 
-                        match header.ptype {
+                        match packet.header.header_type {
                             ProtocolType::Connect => {
-                                if let Ok(player) = Player::new(payload, &addr) {
+                                if let Ok(player) = Player::new(&packet.payload, &addr) {
                                     player_id = Some(player.id.clone());
                                     Player::add_player(player).await;
 
+                                    let w_stream = write_stream.lock().await;
                                     let payload = b"player sucessfully connected";
-                                    let mut w_stream = write_stream.lock().await;
-                                    if let Err(_) = Protocol::create_packet(
-                                        ProtocolType::PlayerConnected,
-                                        payload,
-                                    )
-                                    .send(w_stream, &addr)
-                                    .await
+                                    if let Err(_) = Packet::new(ProtocolType::PConnect, payload)
+                                        .send(w_stream, &addr)
+                                        .await
                                     {
                                         break;
                                     }
                                 } else {
                                     Logger::error(&format!("{addr}: unable to connect player"));
 
+                                    let w_stream = write_stream.lock().await;
                                     let payload = b"unable to connect player";
-                                    let mut w_stream = write_stream.lock().await;
-                                    if let Err(_) =
-                                        Protocol::create_packet(ProtocolType::Err, payload)
-                                            .send(w_stream, &addr)
-                                            .await
+                                    if let Err(_) = Packet::new(ProtocolType::Err, payload)
+                                        .send(w_stream, &addr)
+                                        .await
                                     {
-                                        break;
+                                        continue;
                                     }
-
-                                    attempts += 1;
                                 }
                             }
                             ProtocolType::Close => {
-                                {
-                                    let mut w_stream = write_stream.lock().await;
-                                    w_stream.write_all(b"0x00").await.unwrap_or_default();
-                                }
+                                let w_stream = write_stream.lock().await;
+                                Packet::new(ProtocolType::Close, b"0")
+                                    .send(w_stream, &addr)
+                                    .await
+                                    .unwrap_or_default();
                                 break;
                             }
-                            ProtocolType::PlayerMovement => {
+                            ProtocolType::PMovement => {
                                 if let Some(id) = &player_id {
-                                    if let Some(player) =
-                                        SHARED_PLAYER_STATE.write().await.get_mut(id)
-                                    {
-                                        player.update_position(payload);
+                                    if let Some(player) = PLAYER_STATE.write().await.get_mut(id) {
+                                        player.update_position(&packet.payload);
                                     };
                                 }
                             }
                             _ => {
                                 let payload = b"invalid header";
                                 let w_stream = write_stream.lock().await;
-                                if let Err(_) = Protocol::create_packet(ProtocolType::Err, payload)
+                                if let Err(_) = Packet::new(ProtocolType::Err, payload)
                                     .send(w_stream, &addr)
                                     .await
                                 {
@@ -187,9 +180,8 @@ impl ServerInstance {
                             }
                         }
                     } else {
-                        let payload = b"invalid header";
                         let w_stream = write_stream.lock().await;
-                        if let Err(_) = Protocol::create_packet(ProtocolType::Err, payload)
+                        if let Err(_) = Packet::new(ProtocolType::Err, b"invalid header")
                             .send(w_stream, &addr)
                             .await
                         {
