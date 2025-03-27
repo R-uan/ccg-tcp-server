@@ -13,6 +13,11 @@ impl Logger {
         println!("[DEBUG] [{local}] {message}");
     }
 
+    pub fn warn(message: &str) {
+        let local = Local::now().format("%d/%m/%Y %H:%M:%S");
+        eprintln!("[WARN] [{local}] {message}");
+    }
+
     pub fn error(message: &str) {
         let local = Local::now().format("%d/%m/%Y %H:%M:%S");
         eprintln!("[ERROR] [{local}] {message}");
