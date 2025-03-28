@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use crate::{
-    game::player_state::Player,
+    game::player::Player,
     utils::{checksum::CheckSum, errors::PackageWriteError, logger::Logger},
 };
 
@@ -79,6 +79,7 @@ impl Client {
 
             Logger::info(&format!("{addr}: received {bytes_read} bytes"));
             if let Ok(packet) = Packet::parse(&buffer[..bytes_read]) {
+                Logger::info(&format!("{addr}: packet sucessfuly parsed"));
                 if !CheckSum::check(&packet.header.checksum, &packet.payload) {
                     Logger::error(&format!("{addr}: checksum check failed"));
                     let packet = Packet::new(MessageType::INVALIDCHECKSUM, b"");
@@ -88,6 +89,8 @@ impl Client {
                 }
 
                 self.handle_packet(&packet).await
+            } else {
+                Logger::info(&format!("{addr}: packet couldn't be parsed"));
             }
         }
     }
@@ -136,8 +139,16 @@ impl Client {
                     };
                 }
                 if let Ok(player) = Player::new(&packet.payload) {
-                    Logger::info(&format!("{}: player connected", &self.addr));
+                    Logger::info(&format!(
+                        "{}: player connected [{}]",
+                        &self.addr, &player.uuid
+                    ));
                     *player_guard = Some(player);
+                    let payload = b"yipee, player connected";
+                    let packet = Packet::new(MessageType::CONNECT, payload);
+                    if self.send_packet(&packet).await.is_err() {
+                        self.disconnect().await;
+                    }
                 } else {
                     Logger::info(&format!("{}: invalid player data", &self.addr));
                     let packet = Packet::new(MessageType::INVALIDPLAYERDATA, b"");

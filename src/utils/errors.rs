@@ -26,3 +26,12 @@ impl fmt::Display for NoAddrError {
         write!(f, "Could not get client addr.")
     }
 }
+
+#[derive(Debug)]
+pub struct InvalidPlayerPayload;
+
+impl fmt::Display for InvalidPlayerPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "player payload invalid")
+    }
+}
