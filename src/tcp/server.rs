@@ -24,11 +24,10 @@ pub struct ServerInstance {
 }
 
 impl ServerInstance {
-    /**
-        Creates a new ServerInstance with:
-        * A TCPListener bound to 127.0.0.1 and the given port
-        * A GAMESTATE with default initial values
-    */
+    /// Creates and binds a new `ServerInstance` to the given port.
+    ///
+    /// On success, returns an initialized server with a bound TCP listener.
+    /// Returns an error if the bind fails.
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
         return match TcpListener::bind((HOST, port)).await {
             Ok(tcp_stream) => {
@@ -42,12 +41,12 @@ impl ServerInstance {
         };
     }
 
-    /**
-        This function does two things:
-        * Accepts incoming requests from the socket (TCPListener) and sends them to the `handle_client`.
-        * Fires up the `write_state_update` to periodically send the GAMESTATE to connected clients (must have at least
-        one player connected)
-    */
+    /// Starts the main server loop and handles incoming client connections.
+    ///
+    /// - Spawns a background task to broadcast game state updates.
+    /// - Accepts new TCP clients, logs them, registers them, and spawns their handling task.
+    ///
+    /// Runs indefinitely. Requires `self` as `Arc` for shared access.
     pub async fn run(self: Arc<Self>) {
         let (tx, _) = broadcast::channel::<Packet>(10);
         let transmiter = Arc::new(Mutex::new(tx));
@@ -73,9 +72,19 @@ impl ServerInstance {
         }
     }
 
-    /**
-        Periodically sends the game state connected clients.
-    */
+    /// Broadcasts the current game state to all connected clients every second.
+    ///
+    /// On each tick:
+    /// - If clients are connected, wraps the game state in a `Packet`
+    ///   and sends it through the broadcast channel.
+    /// - Skips sending if no clients are present.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - Broadcast sender wrapped in a mutex.
+    /// * `server` - Shared server reference for accessing game state.
+    ///
+    /// Intended to run as a background task. Never returns under normal conditions.
     async fn write_state_update(tx: Arc<Mutex<Sender<Packet>>>, server: Arc<ServerInstance>) {
         let mut interval = time::interval(std::time::Duration::from_millis(1000));
         loop {
