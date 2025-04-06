@@ -194,7 +194,7 @@ impl Client {
                 if let Ok(player) = Player::new(&packet.payload) {
                     Logger::info(&format!(
                         "{}: player connected [{}]",
-                        &self.addr, &player.uuid
+                        &self.addr, &player.id
                     ));
                     *player_guard = Some(player);
                     let payload = b"yipee, player connected";

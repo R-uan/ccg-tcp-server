@@ -21,3 +21,9 @@ Nothing’s production-ready—yet.<br>
 
 This is educational. No encryption, no TLS, no mercy.
 Use at your own risk.
+
+## Protocol
+``` 
+[Protocol Header (Fixed 6 bytes)]
+[COBOR-encoded payload]
+```

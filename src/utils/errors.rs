@@ -27,7 +27,7 @@ impl fmt::Display for NoAddrError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct InvalidPlayerPayload;
 
 impl fmt::Display for InvalidPlayerPayload {
