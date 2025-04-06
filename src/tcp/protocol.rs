@@ -21,14 +21,15 @@ use crate::utils::{checksum::CheckSum, errors::InvalidHeaderError};
 pub enum MessageType {
     DISCONNECT = 0x00,
     CONNECT = 0x01,
+    PING = 0x02,
 
     GAMESTATE = 0x10,
 
+    INVALIDHEADER = 0xFA,
     ALREADYCONNECTED = 0xFB,
     INVALIDPLAYERDATA = 0xFC,
     INVALIDCHECKSUM = 0xFD,
-    INVALIDHEADER = 0xFE,
-    ERROR = 0xFF,
+    ERROR = 0xFE,
 }
 
 impl TryFrom<u8> for MessageType {
@@ -44,8 +45,9 @@ impl TryFrom<u8> for MessageType {
         match value {
             0x00 => Ok(MessageType::DISCONNECT),
             0x01 => Ok(MessageType::CONNECT),
-            0x02 => Ok(MessageType::GAMESTATE),
-            0xFF => Ok(MessageType::ERROR),
+            0x10 => Ok(MessageType::GAMESTATE),
+            0x02 => Ok(MessageType::PING),
+            0xFE => Ok(MessageType::ERROR),
             _ => Err(()),
         }
     }
@@ -96,7 +98,7 @@ impl ProtocolHeader {
     ///
     /// Returns an error if the slice is too short or has an invalid type.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, InvalidHeaderError> {
-        if bytes.len() < 5 {
+        if bytes.len() != 6 || bytes[5] != 0x0A {
             return Err(InvalidHeaderError);
         }
 
@@ -131,7 +133,11 @@ impl Packet {
     /// Expects a 5-byte header followed by the payload (skips byte 5: delimiter).
     /// Returns an error if the header is invalid.
     pub fn parse(protocol: &[u8]) -> Result<Self, InvalidHeaderError> {
-        let header = ProtocolHeader::from_bytes(&protocol[..5])?;
+        if protocol.len() < 6 {
+            return Err(InvalidHeaderError);
+        }
+
+        let header = ProtocolHeader::from_bytes(&protocol[..6])?;
         let payload = protocol[6..].to_owned().into_boxed_slice();
         return Ok(Self { header, payload });
     }
@@ -156,5 +162,135 @@ impl Packet {
         packet.extend_from_slice(&self.payload);
 
         packet.into_boxed_slice()
+    }
+}
+
+#[cfg(test)]
+mod protocol_header_tests {
+    use super::*;
+
+    #[test]
+    fn test_protocol_header_creation() {
+        let payload = &[0x10, 0x20, 0x30];
+        let header = ProtocolHeader::new(MessageType::PING, payload);
+
+        assert_eq!(header.header_type, MessageType::PING);
+        assert_eq!(header.payload_length, 3);
+        assert_eq!(header.checksum, CheckSum::new(payload) as i16);
+    }
+
+    #[test]
+    fn test_protocol_header_wrap_header() {
+        let payload = &[0xAA, 0xBB];
+        let header = ProtocolHeader::new(MessageType::PING, payload);
+        let bytes = header.wrap_header();
+
+        assert_eq!(bytes.len(), 6);
+        assert_eq!(bytes[0], MessageType::PING as u8);
+        assert_eq!(bytes[1], 0x00); // high byte of payload length
+        assert_eq!(bytes[2], 0x02); // low byte of payload length
+
+        let expected_checksum = CheckSum::new(payload);
+        assert_eq!(bytes[3], ((expected_checksum >> 8) & 0xFF) as u8);
+        assert_eq!(bytes[4], (expected_checksum & 0xFF) as u8);
+
+        assert_eq!(bytes[5], 0x0A);
+    }
+
+    #[test]
+    fn test_protocol_header_from_bytes_valid() {
+        let payload = &[0x01, 0x02];
+        let header = ProtocolHeader::new(MessageType::PING, payload);
+        let bytes = header.wrap_header();
+
+        let parsed = ProtocolHeader::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.header_type, MessageType::PING);
+        assert_eq!(parsed.payload_length, 2);
+        assert_eq!(parsed.checksum, CheckSum::new(payload) as i16);
+    }
+
+    #[test]
+    fn test_protocol_header_from_bytes_too_short() {
+        let bytes = &[0x01, 0x00];
+        let result = ProtocolHeader::from_bytes(bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_protocol_header_from_bytes_invalid_type() {
+        let payload_length = 1u16.to_be_bytes();
+        let checksum = 0x1234u16.to_be_bytes();
+        let bytes = [
+            0xFF, // invalid message type
+            payload_length[0],
+            payload_length[1],
+            checksum[0],
+            checksum[1],
+        ];
+        let result = ProtocolHeader::from_bytes(&bytes);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn test_packet_new_and_fields() {
+        let payload = &[0xDE, 0xAD, 0xBE, 0xEF];
+        let packet = Packet::new(MessageType::PING, payload);
+
+        assert_eq!(packet.header.header_type, MessageType::PING);
+        assert_eq!(packet.header.payload_length, 4);
+        assert_eq!(packet.header.checksum, CheckSum::new(payload) as i16);
+        assert_eq!(&*packet.payload, payload);
+    }
+
+    #[test]
+    fn test_packet_wrap_packet() {
+        let payload = &[0x42, 0x24];
+        let packet = Packet::new(MessageType::PING, payload);
+        let raw = packet.wrap_packet();
+
+        // Should be 6 bytes for header + 2 bytes for payload
+        assert_eq!(raw.len(), 8);
+
+        // Delimiter check
+        assert_eq!(raw[5], 0x0A);
+        // Payload content
+        assert_eq!(&raw[6..], payload);
+    }
+
+    #[test]
+    fn test_packet_parse_valid() {
+        let payload = &[0x01, 0x02, 0x03];
+        let original = Packet::new(MessageType::PING, payload);
+        let raw = original.wrap_packet();
+
+        let parsed = Packet::parse(&raw).unwrap();
+        assert_eq!(
+            parsed.header.header_type,
+            MessageType::PING,
+            "HeaderType does not match"
+        );
+        assert_eq!(
+            parsed.header.payload_length, 3,
+            "Payload length does not match"
+        );
+        assert_eq!(
+            parsed.header.checksum,
+            CheckSum::new(payload) as i16,
+            "Checksum does not match"
+        );
+        assert_eq!(&*parsed.payload, payload, "Payload does not match");
+    }
+
+    #[test]
+    fn test_packet_parse_invalid_header() {
+        // Too short to contain full header
+        let raw = &[0x01, 0x00, 0x01, 0x12];
+        let result = Packet::parse(raw);
+        assert!(result.is_err());
     }
 }

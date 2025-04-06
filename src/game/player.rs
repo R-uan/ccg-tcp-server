@@ -28,35 +28,40 @@ impl Player {
     }
 }
 
-#[test]
-fn test_valid_player_creation() {
-    let player_data = &Player {
-        id: "1a2b3c4d".to_string(),
-        username: "Tester".to_string(),
-        current_deck_id: "objectid-of-the-deck".to_string(),
-        level: 50,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let player_bytes = serde_cbor::to_vec(player_data).unwrap();
+    #[test]
+    fn test_valid_player_creation() {
+        let player_data = &Player {
+            id: "1a2b3c4d".to_string(),
+            username: "Tester".to_string(),
+            current_deck_id: "objectid-of-the-deck".to_string(),
+            level: 50,
+        };
 
-    let result = Player::new(&player_bytes);
-    assert!(result.is_ok());
+        let player_bytes = serde_cbor::to_vec(player_data).unwrap();
 
-    let player = result.unwrap();
+        let result = Player::new(&player_bytes);
+        assert!(result.is_ok());
 
-    assert_eq!(player.id, player_data.id);
-    assert_eq!(player.username, player_data.username);
-    assert_eq!(player.current_deck_id, player_data.current_deck_id);
-    assert_eq!(player.level, player_data.level);
-}
+        let player = result.unwrap();
 
-#[test]
-fn test_invalid_player_creation() {
-    let bad_payload = b"lol\nwhat\nisthis";
-    let result = Player::new(bad_payload);
-    assert!(result.is_err());
-    match result {
-        Err(e) => assert_eq!(e, InvalidPlayerPayload),
-        Ok(_) => panic!("Expected error, got Ok"),
-    };
+        assert_eq!(player.id, player_data.id);
+        assert_eq!(player.username, player_data.username);
+        assert_eq!(player.current_deck_id, player_data.current_deck_id);
+        assert_eq!(player.level, player_data.level);
+    }
+
+    #[test]
+    fn test_invalid_player_creation() {
+        let bad_payload = b"lol\nwhat\nisthis";
+        let result = Player::new(bad_payload);
+        assert!(result.is_err());
+        match result {
+            Err(e) => assert_eq!(e, InvalidPlayerPayload),
+            Ok(_) => panic!("Expected error, got Ok"),
+        };
+    }
 }
