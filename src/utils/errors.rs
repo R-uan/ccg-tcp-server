@@ -1,5 +1,20 @@
 use std::fmt;
 
+#[derive(Debug, thiserror::Error)]
+pub enum PlayerErrors {
+    #[error("Invalid player payload")]
+    InvalidPlayerPayload,
+
+    #[error("Player token was not authorized")]
+    UnauthorizedPlayerError,
+
+    #[error("Invalid deck formatting")]
+    InvalidDeckError,
+
+    #[error("Unexpected error")]
+    UnexpectedPlayerError,
+}
+
 #[derive(Debug)]
 pub struct InvalidHeaderError;
 

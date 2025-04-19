@@ -108,9 +108,7 @@ impl Client {
                 if !CheckSum::check(&packet.header.checksum, &packet.payload) {
                     Logger::error(&format!("{addr}: checksum check failed"));
                     let packet = Packet::new(MessageType::INVALIDCHECKSUM, b"");
-                    if self.send_packet(&packet).await.is_err() {
-                        break;
-                    };
+                    self.send_or_disconnect(&packet).await;
                 }
 
                 self.handle_packet(&packet).await
@@ -146,7 +144,7 @@ impl Client {
             let mut stream = self.write_stream.lock().await;
 
             if stream.write_all(&packet_data).await.is_ok() {
-                Logger::error(&format!("{}: packet sent:", &self.addr));
+                Logger::info(&format!("{}: packet sent", &self.addr));
                 return Ok(());
             }
 
@@ -191,11 +189,12 @@ impl Client {
                     let packet = Packet::new(MessageType::ALREADYCONNECTED, payload);
                     self.send_or_disconnect(&packet).await;
                 }
-                if let Ok(player) = Player::new(&packet.payload) {
+                if let Ok(player) = Player::new(&packet.payload).await {
                     Logger::info(&format!(
                         "{}: player connected [{}]",
                         &self.addr, &player.id
                     ));
+
                     *player_guard = Some(player);
                     let payload = b"yipee, player connected";
                     let packet = Packet::new(MessageType::CONNECT, payload);

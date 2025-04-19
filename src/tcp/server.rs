@@ -4,23 +4,22 @@ use tokio::{
     net::TcpListener,
     sync::{
         broadcast::{self, Sender},
-        Mutex,
+        Mutex, RwLock,
     },
-    time,
 };
 
 use crate::{game::game_state::GameState, utils::logger::Logger};
 
 use super::{
     client::{Client, CLIENTS},
-    protocol::{MessageType, Packet},
+    protocol::Packet,
 };
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 pub struct ServerInstance {
     pub socket: TcpListener,
-    pub game_state: GameState,
+    pub game_state: Arc<RwLock<GameState>>,
 }
 
 impl ServerInstance {
@@ -32,10 +31,11 @@ impl ServerInstance {
         return match TcpListener::bind((HOST, port)).await {
             Ok(tcp_stream) => {
                 Logger::debug(&format!("Server listening on port {port}"));
-                Ok(ServerInstance {
+                let game_state = GameState::new_game();
+                return Ok(ServerInstance {
                     socket: tcp_stream,
-                    game_state: GameState::new_game(),
-                })
+                    game_state: Arc::new(RwLock::new(game_state)),
+                });
             }
             Err(error) => Err(error),
         };
@@ -68,6 +68,10 @@ impl ServerInstance {
                 tokio::spawn(async move {
                     client.connect().await;
                 });
+
+                if clients.len() == 2 {
+                    self.initialize_game_state().await;
+                }
             }
         }
     }
@@ -86,18 +90,18 @@ impl ServerInstance {
     ///
     /// Intended to run as a background task. Never returns under normal conditions.
     async fn write_state_update(tx: Arc<Mutex<Sender<Packet>>>, server: Arc<ServerInstance>) {
-        let mut interval = time::interval(std::time::Duration::from_millis(1000));
-        loop {
-            interval.tick().await;
-            let clients = CLIENTS.read().await;
+        todo!()
+    }
 
-            if clients.len() > 0 {
-                Logger::info(&format!("Sending game state"));
-                let payload = server.game_state.wrap_game_state();
-                let packet = Packet::new(MessageType::GAMESTATE, &payload);
-                let tx = tx.lock().await;
-                let _ = tx.send(packet);
-            }
-        }
+    async fn initialize_game_state(&self) {
+        let clients = CLIENTS.read().await;
+        let keys: Vec<_> = clients.keys().collect();
+        let mut game_state = self.game_state.write().await;
+
+        let player0 = &clients[keys[0]];
+        let player1 = &clients[keys[1]];
+
+        game_state.add_red_player(player0).await;
+        game_state.add_blue_player(player1).await;
     }
 }

@@ -1,4 +1,4 @@
-use crate::utils::{checksum::CheckSum, errors::InvalidHeaderError};
+use crate::utils::{checksum::CheckSum, errors::InvalidHeaderError, logger::Logger};
 
 /// Represents the type of message in a protocol packet.
 ///
@@ -134,6 +134,7 @@ impl Packet {
     /// Returns an error if the header is invalid.
     pub fn parse(protocol: &[u8]) -> Result<Self, InvalidHeaderError> {
         if protocol.len() < 6 {
+            Logger::error(&format!("Protocol size too smol"));
             return Err(InvalidHeaderError);
         }
 

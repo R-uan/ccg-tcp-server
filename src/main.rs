@@ -3,6 +3,7 @@ use std::{io::Error, sync::Arc};
 use tcp::server::ServerInstance;
 
 mod game;
+mod models;
 mod tcp;
 mod utils;
 
