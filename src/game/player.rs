@@ -1,5 +1,9 @@
-use crate::{models::card::Card, utils::errors::PlayerErrors};
-use reqwest::StatusCode;
+use crate::{
+    models::{card::Card, client_requests::ConnRequest, http_response::PartialPlayerProfile},
+    utils::{errors::PlayerErrors, logger::Logger},
+    SETTINGS,
+};
+use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -27,17 +31,38 @@ impl Player {
     /// - `Ok(Player)` if parsing succeeds
     /// - `Err(InvalidPlayerPayload)` if UTF-8 is invalid or format is incorrect
     pub async fn new(payload: &[u8]) -> Result<Self, PlayerErrors> {
-        let mut player: Player = serde_cbor::from_slice::<Player>(payload)
-            .map_err(|_| PlayerErrors::InvalidPlayerPayload)?;
+        let request: ConnRequest =
+            serde_cbor::from_slice(payload).map_err(|_| PlayerErrors::InvalidPlayerPayload)?;
+        let player_profile = Player::get_player_profile(&request.token).await?;
+        let player_deck = Player::get_player_deck(&request.current_deck_id, &request.token).await?;
 
-        match reqwest::get(format!("/api/player/deck/{}", player.current_deck_id)).await {
+        return Ok(Player {
+            id: request.id,
+            player_token: request.token,
+            level: player_profile.level,
+            username: player_profile.username,
+            current_deck_id: request.current_deck_id,
+            current_deck: Some(player_deck),
+        });
+    }
+
+    async fn get_player_deck(deck_id: &str, token: &str) -> Result<Vec<Card>, PlayerErrors> {
+        let settings = SETTINGS.get().expect("Settings not initialized");
+        let api_url = format!("{}/api/player/deck/{}", settings.deck_server, deck_id);
+        let reqwest_client = reqwest::Client::new();
+
+        return match reqwest_client
+            .get(api_url)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await
+        {
             Ok(response) => {
-                let deck = response
+                let result = response
                     .json::<Vec<Card>>()
                     .await
-                    .map_err(|_| PlayerErrors::InvalidDeckError)?;
-
-                player.current_deck = Some(deck);
+                    .map_err(|_| PlayerErrors::InvalidDeckError);
+                result
             }
             Err(e) => {
                 let status = e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -47,47 +72,34 @@ impl Player {
                 };
             }
         };
+    }
 
-        return Ok(player);
+    async fn get_player_profile(token: &str) -> Result<PartialPlayerProfile, PlayerErrors> {
+        let api_url = format!("http://127.0.0.1:5001/api/player/profile");
+        let reqwest_client = reqwest::Client::new();
+
+        return match reqwest_client
+            .get(api_url)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let result = response
+                    .json::<PartialPlayerProfile>()
+                    .await
+                    .map_err(|_| PlayerErrors::InvalidPlayerPayload);
+                result
+            }
+
+            Err(e) => {
+                let status = e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                Logger::error("Player profile fetch error");
+                return match status {
+                    StatusCode::UNAUTHORIZED => Err(PlayerErrors::UnauthorizedPlayerError),
+                    _ => Err(PlayerErrors::UnexpectedPlayerError),
+                };
+            }
+        };
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_valid_player_creation() {
-//         let player_data = &Player {
-//             id: "1a2b3c4d".to_string(),
-//             username: "Tester".to_string(),
-//             current_deck_id: "objectid-of-the-deck".to_string(),
-//             level: 50,
-//             current_deck: None,
-//             player_token: "".to_string(),
-//         };
-
-//         let player_bytes = serde_cbor::to_vec(player_data).unwrap();
-
-//         let result = Player::new(&player_bytes);
-//         assert!(result.is_ok());
-
-//         let player = result.unwrap();
-
-//         assert_eq!(player.id, player_data.id);
-//         assert_eq!(player.username, player_data.username);
-//         assert_eq!(player.current_deck_id, player_data.current_deck_id);
-//         assert_eq!(player.level, player_data.level);
-//     }
-
-//     #[test]
-//     fn test_invalid_player_creation() {
-//         let bad_payload = b"lol\nwhat\nisthis";
-//         let result = Player::new(bad_payload);
-//         assert!(result.is_err());
-//         match result {
-//             Err(e) => assert_eq!(e, InvalidPlayerPayload),
-//             Ok(_) => panic!("Expected error, got Ok"),
-//         };
-//     }
-// }

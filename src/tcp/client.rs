@@ -189,20 +189,24 @@ impl Client {
                     let packet = Packet::new(MessageType::ALREADYCONNECTED, payload);
                     self.send_or_disconnect(&packet).await;
                 }
-                if let Ok(player) = Player::new(&packet.payload).await {
-                    Logger::info(&format!(
-                        "{}: player connected [{}]",
-                        &self.addr, &player.id
-                    ));
 
-                    *player_guard = Some(player);
-                    let payload = b"yipee, player connected";
-                    let packet = Packet::new(MessageType::CONNECT, payload);
-                    self.send_or_disconnect(&packet).await;
-                } else {
-                    Logger::info(&format!("{}: invalid player data", &self.addr));
-                    let packet = Packet::new(MessageType::INVALIDPLAYERDATA, b"");
-                    self.send_or_disconnect(&packet).await;
+                match Player::new(&packet.payload).await {
+                    Ok(player) => {
+                        Logger::info(&format!(
+                            "{}: player connected [{}]",
+                            &self.addr, &player.id
+                        ));
+
+                        *player_guard = Some(player);
+                        let payload = b"yipee, player connected";
+                        let packet = Packet::new(MessageType::CONNECT, payload);
+                        self.send_or_disconnect(&packet).await;
+                    }
+                    Err(e) => {
+                        Logger::info(&format!("{}: invalid player data {}", &self.addr, e));
+                        let packet = Packet::new(MessageType::INVALIDPLAYERDATA, b"");
+                        self.send_or_disconnect(&packet).await;
+                    }
                 }
             }
             MessageType::DISCONNECT => {

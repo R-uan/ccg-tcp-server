@@ -51,11 +51,11 @@ impl ServerInstance {
         let (tx, _) = broadcast::channel::<Packet>(10);
         let transmiter = Arc::new(Mutex::new(tx));
 
-        tokio::spawn({
-            let server_clone = Arc::clone(&self);
-            let tx = Arc::clone(&transmiter);
-            async move { ServerInstance::write_state_update(tx, server_clone).await }
-        });
+        // tokio::spawn({
+        //     let server_clone = Arc::clone(&self);
+        //     let tx = Arc::clone(&transmiter);
+        //     async move { ServerInstance::write_state_update(tx, server_clone).await }
+        // });
 
         loop {
             let tx = Arc::clone(&transmiter);
