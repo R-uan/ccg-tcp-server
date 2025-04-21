@@ -203,7 +203,7 @@ impl Client {
                         self.send_or_disconnect(&packet).await;
                     }
                     Err(e) => {
-                        Logger::info(&format!("{}: invalid player data {}", &self.addr, e));
+                        Logger::info(&format!("{}: Player connection error: {}", &self.addr, e));
                         let packet = Packet::new(MessageType::INVALIDPLAYERDATA, b"");
                         self.send_or_disconnect(&packet).await;
                     }

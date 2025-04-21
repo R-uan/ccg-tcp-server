@@ -1,6 +1,6 @@
 use crate::{
-    models::{card::Card, client_requests::ConnRequest, http_response::PartialPlayerProfile},
-    utils::{errors::PlayerErrors, logger::Logger},
+    models::{client_requests::ConnRequest, deck::Deck, http_response::PartialPlayerProfile},
+    utils::{errors::PlayerConnectionError, logger::Logger},
     SETTINGS,
 };
 use reqwest::{header::AUTHORIZATION, StatusCode};
@@ -13,7 +13,7 @@ pub struct Player {
     pub username: String,
     pub player_token: String,
     pub current_deck_id: String,
-    pub current_deck: Option<Vec<Card>>,
+    pub current_deck: Option<Deck>,
 }
 
 impl Player {
@@ -30,9 +30,9 @@ impl Player {
     /// Returns:
     /// - `Ok(Player)` if parsing succeeds
     /// - `Err(InvalidPlayerPayload)` if UTF-8 is invalid or format is incorrect
-    pub async fn new(payload: &[u8]) -> Result<Self, PlayerErrors> {
-        let request: ConnRequest =
-            serde_cbor::from_slice(payload).map_err(|_| PlayerErrors::InvalidPlayerPayload)?;
+    pub async fn new(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
+        let request: ConnRequest = serde_cbor::from_slice(payload)
+            .map_err(|_| PlayerConnectionError::InvalidPlayerPayload)?;
         let player_profile = Player::get_player_profile(&request.token).await?;
         let player_deck = Player::get_player_deck(&request.current_deck_id, &request.token).await?;
 
@@ -46,35 +46,45 @@ impl Player {
         });
     }
 
-    async fn get_player_deck(deck_id: &str, token: &str) -> Result<Vec<Card>, PlayerErrors> {
+    async fn get_player_deck(deck_id: &str, token: &str) -> Result<Deck, PlayerConnectionError> {
         let settings = SETTINGS.get().expect("Settings not initialized");
-        let api_url = format!("{}/api/player/deck/{}", settings.deck_server, deck_id);
+        let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
         let reqwest_client = reqwest::Client::new();
-
+        Logger::debug(deck_id);
         return match reqwest_client
             .get(api_url)
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .send()
             .await
         {
-            Ok(response) => {
-                let result = response
-                    .json::<Vec<Card>>()
-                    .await
-                    .map_err(|_| PlayerErrors::InvalidDeckError);
-                result
-            }
+            Ok(response) => match response.status() {
+                StatusCode::OK => {
+                    let result = response
+                        .json::<Deck>()
+                        .await
+                        .map_err(|_| PlayerConnectionError::InvalidDeckFormat);
+                    result
+                }
+                StatusCode::NOT_FOUND => Err(PlayerConnectionError::DeckNotFound),
+                _ => {
+                    let error_msg = response.text().await.unwrap();
+                    Logger::error(&error_msg);
+                    Err(PlayerConnectionError::UnexpectedDeckError)
+                }
+            },
             Err(e) => {
                 let status = e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 return match status {
-                    StatusCode::UNAUTHORIZED => Err(PlayerErrors::UnauthorizedPlayerError),
-                    _ => Err(PlayerErrors::UnexpectedPlayerError),
+                    StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedDeckError),
+                    _ => Err(PlayerConnectionError::UnexpectedDeckError),
                 };
             }
         };
     }
 
-    async fn get_player_profile(token: &str) -> Result<PartialPlayerProfile, PlayerErrors> {
+    async fn get_player_profile(
+        token: &str,
+    ) -> Result<PartialPlayerProfile, PlayerConnectionError> {
         let api_url = format!("http://127.0.0.1:5001/api/player/profile");
         let reqwest_client = reqwest::Client::new();
 
@@ -88,7 +98,7 @@ impl Player {
                 let result = response
                     .json::<PartialPlayerProfile>()
                     .await
-                    .map_err(|_| PlayerErrors::InvalidPlayerPayload);
+                    .map_err(|_| PlayerConnectionError::InvalidPlayerPayload);
                 result
             }
 
@@ -96,8 +106,8 @@ impl Player {
                 let status = e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 Logger::error("Player profile fetch error");
                 return match status {
-                    StatusCode::UNAUTHORIZED => Err(PlayerErrors::UnauthorizedPlayerError),
-                    _ => Err(PlayerErrors::UnexpectedPlayerError),
+                    StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedPlayerError),
+                    _ => Err(PlayerConnectionError::UnexpectedPlayerError),
                 };
             }
         };

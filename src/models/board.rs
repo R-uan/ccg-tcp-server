@@ -1,4 +1,4 @@
-use super::card::Card;
+use super::deck::Card;
 
 #[derive(Default)]
 pub struct Board {
