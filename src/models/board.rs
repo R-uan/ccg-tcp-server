@@ -6,3 +6,10 @@ pub struct Board {
     pub artifacts: Vec<Card>,
     pub enchantments: Vec<Card>,
 }
+
+#[derive(Default)]
+pub struct Cemetery {
+    pub creatures: Vec<Card>,
+    pub artifacts: Vec<Card>,
+    pub enchantments: Vec<Card>,
+}

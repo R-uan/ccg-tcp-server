@@ -1,4 +1,4 @@
-use crate::utils::{checksum::CheckSum, errors::InvalidHeaderError, logger::Logger};
+use crate::utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger};
 
 /// Represents the type of message in a protocol packet.
 ///
@@ -97,13 +97,19 @@ impl ProtocolHeader {
     /// Parses a `ProtocolHeader` from a byte slice.
     ///
     /// Returns an error if the slice is too short or has an invalid type.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, InvalidHeaderError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() != 6 || bytes[5] != 0x0A {
-            return Err(InvalidHeaderError);
+            return Err(ProtocolError::InvalidHeaderError(
+                "Format invalid.".to_string(),
+            ));
         }
 
         match MessageType::try_from(bytes[0]) {
-            Err(_) => return Err(InvalidHeaderError),
+            Err(_) => {
+                return Err(ProtocolError::InvalidHeaderError(
+                    "Invalid message type.".to_string(),
+                ))
+            }
             Ok(header_type) => {
                 let checksum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
                 let payload_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
@@ -132,10 +138,10 @@ impl Packet {
     ///
     /// Expects a 5-byte header followed by the payload (skips byte 5: delimiter).
     /// Returns an error if the header is invalid.
-    pub fn parse(protocol: &[u8]) -> Result<Self, InvalidHeaderError> {
+    pub fn parse(protocol: &[u8]) -> Result<Self, ProtocolError> {
         if protocol.len() < 6 {
             Logger::error(&format!("Protocol size too smol"));
-            return Err(InvalidHeaderError);
+            return Err(ProtocolError::InvalidPacketError("Too small".to_string()));
         }
 
         let header = ProtocolHeader::from_bytes(&protocol[..6])?;

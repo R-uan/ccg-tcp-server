@@ -17,7 +17,7 @@ use tokio::{
 
 use crate::{
     game::player::Player,
-    utils::{checksum::CheckSum, errors::PackageWriteError, logger::Logger},
+    utils::{checksum::CheckSum, errors::NetworkError, logger::Logger},
 };
 
 use super::protocol::{MessageType, Packet};
@@ -137,7 +137,7 @@ impl Client {
     /// - Returns `Err(PackageWriteError)` after 3 failed attempts.
     ///
     /// Logs all outcomes.
-    async fn send_packet(&self, packet: &Packet) -> Result<(), PackageWriteError> {
+    async fn send_packet(&self, packet: &Packet) -> Result<(), NetworkError> {
         let mut tries = 0;
         while tries < 3 {
             let packet_data = packet.wrap_packet();
@@ -158,7 +158,7 @@ impl Client {
         }
 
         Logger::error(&format!("{}: failed to send packet", &self.addr));
-        return Err(PackageWriteError);
+        return Err(NetworkError::PackageWriteError("unknown error".to_string()));
     }
 
     /// Sends a packet to the client, disconnecting if the send fails.

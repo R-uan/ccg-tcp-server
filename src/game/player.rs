@@ -85,7 +85,8 @@ impl Player {
     async fn get_player_profile(
         token: &str,
     ) -> Result<PartialPlayerProfile, PlayerConnectionError> {
-        let api_url = format!("http://127.0.0.1:5001/api/player/profile");
+        let settings = SETTINGS.get().expect("Settings not initialized");
+        let api_url = format!("{}/api/player/profile", settings.auth_server);
         let reqwest_client = reqwest::Client::new();
 
         return match reqwest_client

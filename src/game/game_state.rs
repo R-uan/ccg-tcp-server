@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::{
-    models::{board::Board, cemetery::Cemetery},
+    models::{board::Board, board::Cemetery},
     tcp::client::Client,
 };
 
