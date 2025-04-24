@@ -1,4 +1,11 @@
-use crate::utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger};
+use std::sync::Arc;
+
+use crate::{
+    game::player::Player,
+    utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
+};
+
+use super::client::Client;
 
 /// Represents the type of message in a protocol packet.
 ///
@@ -50,6 +57,78 @@ impl TryFrom<u8> for MessageType {
             0xFE => Ok(MessageType::ERROR),
             _ => Err(()),
         }
+    }
+}
+
+pub struct Protocol {
+    client: Arc<Client>,
+}
+
+impl Protocol {
+    pub fn new(client: Arc<Client>) -> Self {
+        return Protocol { client };
+    }
+
+    pub async fn handle_incoming(&self, buffer: &[u8]) {
+        let addr = self.client.addr;
+        if let Ok(packet) = Packet::parse(&buffer) {
+            Logger::info(&format!("{addr}: packet sucessfuly parsed"));
+            if !CheckSum::check(&packet.header.checksum, &packet.payload) {
+                Logger::error(&format!("{addr}: checksum check failed"));
+                let packet = Packet::new(MessageType::INVALIDCHECKSUM, b"");
+                self.client.send_or_disconnect(&packet).await;
+            }
+
+            self.handle_packet(&packet).await
+        } else {
+            Logger::info(&format!("{addr}: packet couldn't be parsed"));
+        }
+    }
+
+    async fn handle_packet(&self, packet: &Packet) {
+        let message_type = &packet.header.header_type;
+        match message_type {
+            MessageType::CONNECT => self.handle_connect(packet).await,
+            MessageType::DISCONNECT => self.handle_disconnect().await,
+            _ => {
+                Logger::warn(&format!("{}: invalid header", &self.client.addr));
+                let packet = Packet::new(MessageType::INVALIDHEADER, b"");
+                self.client.send_or_disconnect(&packet).await;
+            }
+        }
+    }
+
+    async fn handle_connect(&self, packet: &Packet) {
+        let addr = self.client.addr;
+        let mut player_guard = self.client.player.write().await;
+        if player_guard.is_some() {
+            Logger::warn(&format!("{}: player already connected", addr));
+            let payload = b"this stream already has a client attached to it";
+            let packet = Packet::new(MessageType::ALREADYCONNECTED, payload);
+            self.client.send_or_disconnect(&packet).await;
+        }
+
+        match Player::new(&packet.payload).await {
+            Ok(player) => {
+                Logger::info(&format!("{}: player connected [{}]", addr, &player.id));
+
+                *player_guard = Some(player);
+                let payload = b"yipee, player connected";
+                let packet = Packet::new(MessageType::CONNECT, payload);
+                self.client.send_or_disconnect(&packet).await;
+            }
+            Err(e) => {
+                Logger::info(&format!("{}: Player connection error: {}", addr, e));
+                let packet = Packet::new(MessageType::INVALIDPLAYERDATA, b"");
+                self.client.send_or_disconnect(&packet).await;
+            }
+        }
+    }
+
+    async fn handle_disconnect(&self) {
+        Logger::warn(&format!("{}: client disconnecting", &self.client.addr));
+        let packet = Packet::new(MessageType::DISCONNECT, b"");
+        self.client.send_or_disconnect(&packet).await;
     }
 }
 

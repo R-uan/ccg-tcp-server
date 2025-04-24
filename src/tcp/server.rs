@@ -6,13 +6,14 @@ use tokio::{
         broadcast::{self, Sender},
         Mutex, RwLock,
     },
+    time,
 };
 
 use crate::{game::game_state::GameState, utils::logger::Logger};
 
 use super::{
     client::{Client, CLIENTS},
-    protocol::Packet,
+    protocol::{MessageType, Packet},
 };
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
@@ -57,6 +58,12 @@ impl ServerInstance {
         //     async move { ServerInstance::write_state_update(tx, server_clone).await }
         // });
 
+        tokio::spawn({
+            let server_clone = Arc::clone(&self);
+            let tx = Arc::clone(&transmiter);
+            async move { ServerInstance::write_state_update(tx, server_clone).await }
+        });
+
         loop {
             let tx = Arc::clone(&transmiter);
             if let Ok((c_stream, addr)) = self.socket.accept().await {
@@ -68,10 +75,6 @@ impl ServerInstance {
                 tokio::spawn(async move {
                     client.connect().await;
                 });
-
-                if clients.len() == 2 {
-                    self.initialize_game_state().await;
-                }
             }
         }
     }
@@ -89,10 +92,22 @@ impl ServerInstance {
     /// * `server` - Shared server reference for accessing game state.
     ///
     /// Intended to run as a background task. Never returns under normal conditions.
-    async fn write_state_update(tx: Arc<Mutex<Sender<Packet>>>, server: Arc<ServerInstance>) {
-        todo!()
-    }
+    pub async fn write_state_update(tx: Arc<Mutex<Sender<Packet>>>, server: Arc<ServerInstance>) {
+        let mut interval = time::interval(std::time::Duration::from_millis(1000));
+        loop {
+            interval.tick().await;
+            let clients = CLIENTS.read().await;
+            let game_state = server.game_state.read().await;
 
+            if clients.len() > 0 {
+                Logger::info(&format!("Sending game state"));
+                let payload = game_state.wrap_game_state();
+                let packet = Packet::new(MessageType::GAMESTATE, &payload);
+                let tx = tx.lock().await;
+                let _ = tx.send(packet);
+            }
+        }
+    }
     async fn initialize_game_state(&self) {
         let clients = CLIENTS.read().await;
         let keys: Vec<_> = clients.keys().collect();
