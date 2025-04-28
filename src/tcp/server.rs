@@ -108,6 +108,7 @@ impl ServerInstance {
             }
         }
     }
+
     async fn initialize_game_state(&self) {
         let clients = CLIENTS.read().await;
         let keys: Vec<_> = clients.keys().collect();

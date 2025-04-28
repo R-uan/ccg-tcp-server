@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{Arc, LazyLock},
     thread::sleep,
@@ -17,10 +17,10 @@ use tokio::{
 
 use crate::{
     game::player::Player,
-    utils::{checksum::CheckSum, errors::NetworkError, logger::Logger},
+    utils::{errors::NetworkError, logger::Logger},
 };
 
-use super::protocol::{self, MessageType, Packet, Protocol};
+use super::protocol::{Packet, Protocol};
 
 type ClientState = Arc<RwLock<HashMap<SocketAddr, Arc<Client>>>>;
 pub static CLIENTS: LazyLock<ClientState> = LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
@@ -48,6 +48,8 @@ pub struct Client {
 
     /// Stream used for writing data to the client.
     pub write_stream: Arc<Mutex<OwnedWriteHalf>>,
+
+    pub missed_packets: Arc<RwLock<VecDeque<Packet>>>,
 }
 
 impl Client {
@@ -72,6 +74,7 @@ impl Client {
             connected: Arc::new(RwLock::new(true)),
             read_stream: Arc::new(Mutex::new(read_stream)),
             write_stream: Arc::new(Mutex::new(write_stream)),
+            missed_packets: Arc::new(RwLock::new(VecDeque::new())),
         });
     }
 
@@ -87,8 +90,8 @@ impl Client {
         let mut buffer = [0; 1024];
 
         tokio::spawn({
-            let me = Arc::clone(&self);
-            async move { me.tick_game_state().await }
+            let self_clone = Arc::clone(&self);
+            async move { self_clone.tick_game_state().await }
         });
 
         let client_clone = Arc::clone(&self);
@@ -116,7 +119,6 @@ impl Client {
     async fn disconnect(&self) {
         Logger::info(&format!("{}: disconnecting", &self.addr));
         let mut connection_status = self.connected.write().await;
-        CLIENTS.write().await.remove(&self.addr);
         *connection_status = false;
     }
 
@@ -129,22 +131,21 @@ impl Client {
     /// Logs all outcomes.
     async fn send_packet(&self, packet: &Packet) -> Result<(), NetworkError> {
         let mut tries = 0;
-        while tries < 3 {
+        let addr = self.addr;
+
+        while tries < 5 {
             let packet_data = packet.wrap_packet();
             let mut stream = self.write_stream.lock().await;
 
-            if stream.write_all(&packet_data).await.is_ok() {
-                Logger::info(&format!("{}: packet sent", &self.addr));
-                return Ok(());
+            if stream.write_all(&packet_data).await.is_err() {
+                Logger::error(&format!("{}: failed to send packet. [{}]", addr, tries));
+                sleep(Duration::from_millis(500));
+                tries += 1;
+                continue;
             }
 
-            Logger::error(&format!(
-                "{}: failed to send packet . . . [{}]",
-                &self.addr, tries
-            ));
-
-            sleep(Duration::from_millis(500));
-            tries += 1;
+            Logger::info(&format!("{}: {} bytes sent", addr, packet_data.len()));
+            return Ok(());
         }
 
         Logger::error(&format!("{}: failed to send packet", &self.addr));
@@ -169,15 +170,24 @@ impl Client {
     /// Intended to run in its own task while the client is connected.
     async fn tick_game_state(&self) {
         let mut receiver = self.rx.lock().await;
-        let connected = self.connected.read().await;
-        while let Ok(game_state) = receiver.recv().await {
-            if !*connected {
-                break;
-            }
 
-            if self.send_packet(&game_state).await.is_err() {
-                break;
-            };
+        while let Ok(game_state) = receiver.recv().await {
+            if !*self.connected.read().await {
+                let mut missed_packets = self.missed_packets.write().await;
+                missed_packets.push_back(game_state);
+
+                Logger::info(&format!(
+                    "{}: has {} packets in queue.",
+                    self.addr,
+                    missed_packets.len()
+                ));
+
+                if missed_packets.len() >= 60 {
+                    missed_packets.pop_back();
+                }
+            } else {
+                self.send_or_disconnect(&game_state).await;
+            }
         }
     }
 }
