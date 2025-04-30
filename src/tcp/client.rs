@@ -16,7 +16,7 @@ use tokio::{
 };
 
 use crate::{
-    game::player::Player,
+    game::{game_state::GameState, player::Player},
     utils::{errors::NetworkError, logger::Logger},
 };
 
@@ -32,23 +32,18 @@ pub static CLIENTS: LazyLock<ClientState> = LazyLock::new(|| Arc::new(RwLock::ne
 pub struct Client {
     /// The client's socket address (IP and port).
     pub addr: SocketAddr,
-
     /// Whether the client is currently connected.
     /// Wrapped for shared mutable access.
     pub connected: Arc<RwLock<bool>>,
-
     /// Receiver for incoming broadcast packets.
     pub rx: Arc<Mutex<Receiver<Packet>>>,
-
     /// Optional player info associated with the client.
     pub player: Arc<RwLock<Option<Player>>>,
-
+    pub game_state: Arc<RwLock<GameState>>,
     /// Stream used for reading data from the client.
     pub read_stream: Arc<Mutex<OwnedReadHalf>>,
-
     /// Stream used for writing data to the client.
     pub write_stream: Arc<Mutex<OwnedWriteHalf>>,
-
     pub missed_packets: Arc<RwLock<VecDeque<Packet>>>,
 }
 
@@ -65,10 +60,16 @@ impl Client {
     ///
     /// # Returns
     /// An `Arc<Client>` ready for use in async tasks.
-    pub fn new(stream: TcpStream, addr: SocketAddr, rx: Receiver<Packet>) -> Arc<Self> {
+    pub fn new(
+        stream: TcpStream,
+        addr: SocketAddr,
+        rx: Receiver<Packet>,
+        gs: Arc<RwLock<GameState>>,
+    ) -> Arc<Self> {
         let (read_stream, write_stream) = stream.into_split();
         return Arc::new(Self {
             addr,
+            game_state: gs,
             rx: Arc::new(Mutex::new(rx)),
             player: Arc::new(RwLock::new(None)),
             connected: Arc::new(RwLock::new(true)),

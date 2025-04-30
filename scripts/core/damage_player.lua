@@ -1,3 +1,4 @@
-function Hello()
-    print("Hello");
+function Hello(context)
+    local womp = context["womp"]
+    print(womp);
 end

@@ -1,15 +1,27 @@
-use super::deck::Card;
+use serde::{Deserialize, Serialize};
 
-#[derive(Default)]
+use super::deck::CardRef;
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Board {
-    pub creatures: Vec<Card>,
-    pub artifacts: Vec<Card>,
-    pub enchantments: Vec<Card>,
+    pub creatures: [Option<CardRef>; 6],
+    pub artifacts: [Option<CardRef>; 3],
+    pub enchantments: [Option<CardRef>; 3],
 }
 
-#[derive(Default)]
-pub struct Cemetery {
-    pub creatures: Vec<Card>,
-    pub artifacts: Vec<Card>,
-    pub enchantments: Vec<Card>,
+impl Default for Board {
+    fn default() -> Self {
+        Self {
+            creatures: [None, None, None, None, None, None],
+            artifacts: [None, None, None],
+            enchantments: [None, None, None],
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct Graveyard {
+    pub creatures: Vec<CardRef>,
+    pub artifacts: Vec<CardRef>,
+    pub enchantments: Vec<CardRef>,
 }

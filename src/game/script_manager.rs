@@ -4,6 +4,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Error},
     path::PathBuf,
+    sync::Arc,
 };
 
 use mlua::{Function, Lua};
@@ -12,18 +13,18 @@ use tokio::sync::Mutex;
 use crate::utils::logger::Logger;
 
 pub struct ScriptManager {
-    lua: Lua,
-    core: Mutex<HashMap<String, mlua::Function>>,
-    cards: Mutex<HashMap<String, mlua::Function>>,
-    effects: Mutex<HashMap<String, mlua::Function>>,
-    triggers: Mutex<HashMap<String, mlua::Function>>,
+    pub lua: Arc<Lua>,
+    pub core: Mutex<HashMap<String, mlua::Function>>,
+    pub cards: Mutex<HashMap<String, mlua::Function>>,
+    pub effects: Mutex<HashMap<String, mlua::Function>>,
+    pub triggers: Mutex<HashMap<String, mlua::Function>>,
 }
 
 impl ScriptManager {
     pub fn new_vm() -> Self {
         let lua = mlua::Lua::new();
         return Self {
-            lua,
+            lua: Arc::new(lua),
             core: Mutex::new(HashMap::new()),
             cards: Mutex::new(HashMap::new()),
             effects: Mutex::new(HashMap::new()),

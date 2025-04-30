@@ -1,8 +1,6 @@
-use std::{io::Error, sync::Arc, thread::sleep, time::Duration};
-
 use config::{Config, File};
-use game::script_manager::ScriptManager;
 use models::settings::Settings;
+use std::io::Error;
 use tcp::server::ServerInstance;
 use tokio::sync::OnceCell;
 
@@ -26,17 +24,10 @@ async fn main() -> Result<(), Error> {
         )
         .unwrap();
 
-    let mut sm = ScriptManager::new_vm();
-    sm.load_scripts().unwrap();
-    sm.set_globals().await;
+    let port = 8000;
+    if let Ok(mut server) = ServerInstance::create_instance(port).await {
+        server.listen().await;
+    }
 
-    let test = sm.get_core_func("Hello").await.unwrap();
-    let hello = test.call::<()>(());
-
-    // let port = 8000;
-    // if let Ok(server) = ServerInstance::create_instance(port).await {
-    //     let server_arc = Arc::new(server);
-    //     server_arc.run().await;
-    // }
     Ok(())
 }

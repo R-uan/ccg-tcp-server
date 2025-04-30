@@ -3,17 +3,19 @@ use std::{io::Error, net::Ipv4Addr, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{
-        broadcast::{self, Sender},
+        broadcast::{self},
         Mutex, RwLock,
     },
-    time,
 };
 
-use crate::{game::game_state::GameState, utils::logger::Logger};
+use crate::{
+    game::{self, game_state::GameState, script_manager::ScriptManager},
+    utils::logger::Logger,
+};
 
 use super::{
     client::{Client, CLIENTS},
-    protocol::{MessageType, Packet},
+    protocol::Packet,
 };
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
@@ -21,6 +23,7 @@ static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 pub struct ServerInstance {
     pub socket: TcpListener,
     pub game_state: Arc<RwLock<GameState>>,
+    pub scripts: Arc<RwLock<ScriptManager>>,
 }
 
 impl ServerInstance {
@@ -29,11 +32,18 @@ impl ServerInstance {
     /// On success, returns an initialized server with a bound TCP listener.
     /// Returns an error if the bind fails.
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
+        let mut lua_vm = ScriptManager::new_vm();
+        lua_vm.load_scripts()?;
+        lua_vm.set_globals().await;
+
+        let scripts = Arc::new(RwLock::new(lua_vm));
+        let scripts_clone = Arc::clone(&scripts);
+        let game_state = GameState::new_game(scripts_clone);
         return match TcpListener::bind((HOST, port)).await {
             Ok(tcp_stream) => {
                 Logger::debug(&format!("Server listening on port {port}"));
-                let game_state = GameState::new_game();
                 return Ok(ServerInstance {
+                    scripts,
                     socket: tcp_stream,
                     game_state: Arc::new(RwLock::new(game_state)),
                 });
@@ -48,76 +58,49 @@ impl ServerInstance {
     /// - Accepts new TCP clients, logs them, registers them, and spawns their handling task.
     ///
     /// Runs indefinitely. Requires `self` as `Arc` for shared access.
-    pub async fn run(self: Arc<Self>) {
+    pub async fn listen(&mut self) {
         let (tx, _) = broadcast::channel::<Packet>(10);
         let transmiter = Arc::new(Mutex::new(tx));
-
-        // tokio::spawn({
-        //     let server_clone = Arc::clone(&self);
-        //     let tx = Arc::clone(&transmiter);
-        //     async move { ServerInstance::write_state_update(tx, server_clone).await }
-        // });
-
-        tokio::spawn({
-            let server_clone = Arc::clone(&self);
-            let tx = Arc::clone(&transmiter);
-            async move { ServerInstance::write_state_update(tx, server_clone).await }
-        });
 
         loop {
             let tx = Arc::clone(&transmiter);
             if let Ok((c_stream, addr)) = self.socket.accept().await {
                 Logger::info(&format!("{addr}: received request"));
                 let tx = tx.lock().await.subscribe();
+
                 let mut clients = CLIENTS.write().await;
-                let client = Client::new(c_stream, addr, tx);
+                let gs_clone = Arc::clone(&self.game_state);
+                let client = Client::new(c_stream, addr, tx, gs_clone);
                 clients.insert(addr, Arc::clone(&client));
+
                 tokio::spawn(async move {
                     client.connect().await;
                 });
             }
-        }
-    }
 
-    /// Broadcasts the current game state to all connected clients every second.
-    ///
-    /// On each tick:
-    /// - If clients are connected, wraps the game state in a `Packet`
-    ///   and sends it through the broadcast channel.
-    /// - Skips sending if no clients are present.
-    ///
-    /// # Arguments
-    ///
-    /// * `tx` - Broadcast sender wrapped in a mutex.
-    /// * `server` - Shared server reference for accessing game state.
-    ///
-    /// Intended to run as a background task. Never returns under normal conditions.
-    pub async fn write_state_update(tx: Arc<Mutex<Sender<Packet>>>, server: Arc<ServerInstance>) {
-        let mut interval = time::interval(std::time::Duration::from_millis(1000));
-        loop {
-            interval.tick().await;
-            let clients = CLIENTS.read().await;
-            let game_state = server.game_state.read().await;
-
-            if clients.len() > 0 {
-                Logger::info(&format!("Sending game state"));
-                let payload = game_state.wrap_game_state();
-                let packet = Packet::new(MessageType::GAMESTATE, &payload);
-                let tx = tx.lock().await;
-                let _ = tx.send(packet);
+            let clients = CLIENTS.read().await.len();
+            if clients == 2 {
+                self.create_game_state().await;
             }
         }
     }
 
-    async fn initialize_game_state(&self) {
+    pub async fn create_game_state(&mut self) {
         let clients = CLIENTS.read().await;
-        let keys: Vec<_> = clients.keys().collect();
+        let client_keys: Vec<_> = clients.keys().collect();
+
+        let client0 = &clients[client_keys[0]];
+        let client1 = &clients[client_keys[1]];
+
+        let player0_guard = client0.player.read().await;
+        let player0 = player0_guard.as_ref().unwrap();
+        let blue = Arc::new(player0);
+
+        let player1_guard = client1.player.read().await;
+        let player1 = player1_guard.as_ref().unwrap();
+        let red = Arc::new(player1);
+
         let mut game_state = self.game_state.write().await;
-
-        let player0 = &clients[keys[0]];
-        let player1 = &clients[keys[1]];
-
-        game_state.add_red_player(player0).await;
-        game_state.add_blue_player(player1).await;
+        game_state.add_players(blue, red);
     }
 }

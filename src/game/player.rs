@@ -6,14 +6,14 @@ use crate::{
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Player {
     pub id: String,
     pub level: u32,
     pub username: String,
     pub player_token: String,
     pub current_deck_id: String,
-    pub current_deck: Option<Deck>,
+    pub current_deck: Deck,
 }
 
 impl Player {
@@ -42,7 +42,7 @@ impl Player {
             level: player_profile.level,
             username: player_profile.username,
             current_deck_id: request.current_deck_id,
-            current_deck: Some(player_deck),
+            current_deck: player_deck,
         });
     }
 
