@@ -6,14 +6,21 @@ use crate::{
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
 
+use super::lua_context::CardView;
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Player {
     pub id: String,
     pub level: u32,
     pub username: String,
+
+    pub player_color: String,
     pub player_token: String,
-    pub current_deck_id: String,
+
     pub current_deck: Deck,
+    pub current_deck_id: String,
+
+    pub current_hand: [Option<CardView>; 10],
 }
 
 impl Player {
@@ -31,19 +38,33 @@ impl Player {
     /// - `Ok(Player)` if parsing succeeds
     /// - `Err(InvalidPlayerPayload)` if UTF-8 is invalid or format is incorrect
     pub async fn new(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
-        let request: ConnRequest = serde_cbor::from_slice(payload)
-            .map_err(|_| PlayerConnectionError::InvalidPlayerPayload)?;
-        let player_profile = Player::get_player_profile(&request.token).await?;
-        let player_deck = Player::get_player_deck(&request.current_deck_id, &request.token).await?;
+        match serde_cbor::from_slice::<ConnRequest>(payload) {
+            Err(e) => {
+                Logger::error(&format!("{}", e.to_string()));
+                return Err(PlayerConnectionError::InvalidPlayerPayload);
+            }
+            Ok(request) => {
+                let player_profile = Player::get_player_profile(&request.token).await?;
+                let player_deck =
+                    Player::get_player_deck(&request.current_deck_id, &request.token).await?;
+                Logger::info(&format!(
+                    "{}: Fetched deck with: {} cards",
+                    &request.id,
+                    player_deck.cards.len()
+                ));
 
-        return Ok(Player {
-            id: request.id,
-            player_token: request.token,
-            level: player_profile.level,
-            username: player_profile.username,
-            current_deck_id: request.current_deck_id,
-            current_deck: player_deck,
-        });
+                return Ok(Player {
+                    id: request.id,
+                    current_deck: player_deck,
+                    player_token: request.token,
+                    level: player_profile.level,
+                    username: player_profile.username,
+                    player_color: request.player_color,
+                    current_deck_id: request.current_deck_id,
+                    current_hand: [None, None, None, None, None, None, None, None, None, None],
+                });
+            }
+        }
     }
 
     async fn get_player_deck(deck_id: &str, token: &str) -> Result<Deck, PlayerConnectionError> {

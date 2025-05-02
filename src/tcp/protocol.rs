@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    game::player::Player,
+    game::{lua_context::LuaContext, player::Player},
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
 };
 
@@ -32,6 +32,9 @@ pub enum MessageType {
 
     GAMESTATE = 0x10,
 
+    PLAYCARD = 0x11,
+    ATTACKPLAYER = 0x12,
+
     INVALIDHEADER = 0xFA,
     ALREADYCONNECTED = 0xFB,
     INVALIDPLAYERDATA = 0xFC,
@@ -52,7 +55,11 @@ impl TryFrom<u8> for MessageType {
         match value {
             0x00 => Ok(MessageType::DISCONNECT),
             0x01 => Ok(MessageType::CONNECT),
+
             0x10 => Ok(MessageType::GAMESTATE),
+            0x11 => Ok(MessageType::PLAYCARD),
+            0x12 => Ok(MessageType::ATTACKPLAYER),
+
             0x02 => Ok(MessageType::PING),
             0xFE => Ok(MessageType::ERROR),
             _ => Err(()),
@@ -90,6 +97,7 @@ impl Protocol {
         match message_type {
             MessageType::CONNECT => self.handle_connect(packet).await,
             MessageType::DISCONNECT => self.handle_disconnect().await,
+            MessageType::PLAYCARD => self.handle_play_card(packet).await,
             _ => {
                 Logger::warn(&format!("{}: invalid header", &self.client.addr));
                 let packet = Packet::new(MessageType::INVALIDHEADER, b"");
@@ -123,6 +131,52 @@ impl Protocol {
                 self.client.send_or_disconnect(&packet).await;
             }
         }
+    }
+
+    async fn handle_play_card(&self, packet: &Packet) {
+        let gs_clone = Arc::clone(&self.client.game_state);
+        let gs_guard = gs_clone.read().await;
+
+        let player_clone = Arc::clone(&self.client.player);
+        let player_guard = player_clone.read().await;
+
+        let scripts_clone = Arc::clone(&gs_guard.lua_scripts);
+
+        if let Some(player) = &*player_guard {
+            if gs_guard.curr_turn == player.player_color {
+                let card_actor_id = String::from_utf8_lossy(&packet.payload);
+                if let Some(card_view) = player
+                    .current_hand
+                    .iter()
+                    .flatten()
+                    .find(|c| c.id == card_actor_id)
+                {
+                    let game_cards_clone = Arc::clone(&gs_guard.game_cards);
+                    let game_cards_guard = game_cards_clone.read().await;
+
+                    let find_card = game_cards_guard
+                        .iter()
+                        .find(|c| c.id == card_actor_id)
+                        .unwrap();
+
+                    for action in &find_card.on_play {
+                        let lua_context = LuaContext::new(
+                            &gs_guard,
+                            card_view,
+                            None,
+                            "on_play".to_string(),
+                            action.to_owned(),
+                        )
+                        .await;
+
+                        let lua = scripts_clone.write().await;
+                        let _ = lua_context.to_table(&lua.lua);
+                    }
+                }
+            }
+        }
+
+        todo!()
     }
 
     async fn handle_disconnect(&self) {

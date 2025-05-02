@@ -5,4 +5,5 @@ pub struct ConnRequest {
     pub id: String,
     pub token: String,
     pub current_deck_id: String,
+    pub player_color: String,
 }

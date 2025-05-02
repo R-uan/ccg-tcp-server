@@ -9,7 +9,7 @@ use tokio::{
 };
 
 use crate::{
-    game::{self, game_state::GameState, script_manager::ScriptManager},
+    game::{game_state::GameState, script_manager::ScriptManager},
     utils::logger::Logger,
 };
 
@@ -86,6 +86,39 @@ impl ServerInstance {
     }
 
     pub async fn create_game_state(&mut self) {
+        {
+            let clients = CLIENTS.read().await;
+            let client_keys: Vec<_> = clients.keys().collect();
+
+            let client0 = &clients[client_keys[0]];
+            let client1 = &clients[client_keys[1]];
+
+            let player0_guard = client0.player.read().await;
+            let player1_guard = client1.player.read().await;
+
+            let player1 = player1_guard.as_ref().unwrap();
+            let player0 = player0_guard.as_ref().unwrap();
+
+            let mut game_state = self.game_state.write().await;
+
+            let red;
+            let blue;
+
+            if &player0.player_color == "blue" {
+                blue = Arc::new(player0);
+                red = Arc::new(player1);
+            } else {
+                blue = Arc::new(player1);
+                red = Arc::new(player0);
+            }
+
+            game_state.add_players(blue, red);
+        }
+
+        self.get_cards().await;
+    }
+
+    pub async fn get_cards(&self) {
         let clients = CLIENTS.read().await;
         let client_keys: Vec<_> = clients.keys().collect();
 
@@ -94,13 +127,21 @@ impl ServerInstance {
 
         let player0_guard = client0.player.read().await;
         let player0 = player0_guard.as_ref().unwrap();
-        let blue = Arc::new(player0);
 
         let player1_guard = client1.player.read().await;
         let player1 = player1_guard.as_ref().unwrap();
-        let red = Arc::new(player1);
+
+        let mut cards: Vec<&str> = vec![];
+
+        for card in &player0.current_deck.cards {
+            cards.push(&card.id);
+        }
+
+        for card in &player1.current_deck.cards {
+            cards.push(&card.id);
+        }
 
         let mut game_state = self.game_state.write().await;
-        game_state.add_players(blue, red);
+        game_state.fetch_cards_details(cards).await;
     }
 }
