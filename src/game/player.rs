@@ -6,21 +6,15 @@ use crate::{
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use super::lua_context::CardView;
-
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct Player {
     pub id: String,
     pub level: u32,
     pub username: String,
-
     pub player_color: String,
     pub player_token: String,
-
     pub current_deck: Deck,
     pub current_deck_id: String,
-
-    pub current_hand: [Option<CardView>; 10],
 }
 
 impl Player {
@@ -39,9 +33,10 @@ impl Player {
     /// - `Err(InvalidPlayerPayload)` if UTF-8 is invalid or format is incorrect
     pub async fn new(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
         match serde_cbor::from_slice::<ConnRequest>(payload) {
-            Err(e) => {
-                Logger::error(&format!("{}", e.to_string()));
-                return Err(PlayerConnectionError::InvalidPlayerPayload);
+            Err(error) => {
+                let reason = error.to_string();
+                Logger::error(&format!("{}", &reason));
+                return Err(PlayerConnectionError::InvalidPlayerPayload(reason));
             }
             Ok(request) => {
                 let player_profile = Player::get_player_profile(&request.token).await?;
@@ -61,7 +56,6 @@ impl Player {
                     username: player_profile.username,
                     player_color: request.player_color,
                     current_deck_id: request.current_deck_id,
-                    current_hand: [None, None, None, None, None, None, None, None, None, None],
                 });
             }
         }
@@ -120,7 +114,7 @@ impl Player {
                 let result = response
                     .json::<PartialPlayerProfile>()
                     .await
-                    .map_err(|_| PlayerConnectionError::InvalidPlayerPayload);
+                    .map_err(|e| PlayerConnectionError::InvalidPlayerPayload(e.to_string()));
                 result
             }
 

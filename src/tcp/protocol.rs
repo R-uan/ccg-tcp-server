@@ -144,8 +144,9 @@ impl Protocol {
 
         if let Some(player) = &*player_guard {
             if gs_guard.curr_turn == player.player_color {
+                let player_view = gs_guard.players[&player.id].read().await;
                 let card_actor_id = String::from_utf8_lossy(&packet.payload);
-                if let Some(card_view) = player
+                if let Some(card_view) = &player_view
                     .current_hand
                     .iter()
                     .flatten()

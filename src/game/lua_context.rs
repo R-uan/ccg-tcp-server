@@ -1,48 +1,12 @@
 use mlua::LuaSerdeExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
-    models::board::{Board, Graveyard},
+    models::views::{CardView, GameStateView},
     utils::logger::Logger,
 };
 
 use super::game_state::GameState;
-
-#[derive(Serialize, Clone)]
-pub struct GameStateView {
-    pub turn: u32,
-    pub red_player: PlayerView,
-    pub blue_player: PlayerView,
-}
-
-#[derive(Serialize, Clone)]
-pub struct PlayerView {
-    pub id: String,
-
-    pub health: i32,
-    pub mana: u32,
-
-    pub hand_size: usize,
-    pub deck_size: usize,
-
-    pub board: Board,
-    pub graveyard_size: usize,
-    pub graveyard: Graveyard,
-}
-
-#[derive(Serialize, Clone, Debug, Deserialize)]
-pub struct CardView {
-    pub id: String,
-    pub hand_id: u32,
-    pub name: String,
-    pub attack: i32,
-    pub health: i32,
-    pub card_type: String,
-    pub effects: Vec<String>,
-    pub owner_id: String,
-    pub is_exhausted: bool,
-    pub position: String,
-}
 
 #[derive(Serialize, Clone)]
 pub struct LuaContext {
@@ -52,9 +16,7 @@ pub struct LuaContext {
 
     pub actor_id: String,
     pub actor_view: CardView,
-
     pub game_state: GameStateView,
-
     pub target_id: Option<String>,
     pub target_view: Option<CardView>,
     // Blue or Red
@@ -68,8 +30,10 @@ impl LuaContext {
         event: String,
         action: String,
     ) -> Self {
-        let red_player = gs.red_player.clone().unwrap().read().await.clone();
-        let blue_player = gs.blue_player.clone().unwrap().read().await.clone();
+        let keys: Vec<_> = gs.players.keys().collect();
+
+        let red_player = gs.players[keys[0]].clone().read().await.clone();
+        let blue_player = gs.players[keys[1]].clone().read().await.clone();
 
         let game_state = GameStateView {
             red_player,

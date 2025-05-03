@@ -1,7 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum PlayerConnectionError {
-    #[error("Invalid player payload")]
-    InvalidPlayerPayload,
+    #[error("Invalid player payload: {0}")]
+    InvalidPlayerPayload(String),
 
     #[error("Player token was not authorized")]
     UnauthorizedPlayerError,
