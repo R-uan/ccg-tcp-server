@@ -1,11 +1,12 @@
-use std::{io::Error, net::Ipv4Addr, sync::Arc};
+use std::{io::Error, net::Ipv4Addr, ops::Deref, sync::Arc};
 
 use tokio::{
     net::TcpListener,
     sync::{
-        broadcast::{self},
+        broadcast::{self, Sender},
         Mutex, RwLock,
     },
+    time,
 };
 
 use crate::{
@@ -15,7 +16,7 @@ use crate::{
 
 use super::{
     client::{Client, CLIENTS},
-    protocol::Packet,
+    protocol::{MessageType, Packet},
 };
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
@@ -24,6 +25,7 @@ pub struct ServerInstance {
     pub socket: TcpListener,
     pub game_state: Arc<RwLock<GameState>>,
     pub scripts: Arc<RwLock<ScriptManager>>,
+    pub transmiter: Arc<Mutex<Sender<Packet>>>,
 }
 
 impl ServerInstance {
@@ -39,12 +41,14 @@ impl ServerInstance {
         let scripts = Arc::new(RwLock::new(lua_vm));
         let scripts_clone = Arc::clone(&scripts);
         let game_state = GameState::new_game(scripts_clone);
+        let (tx, _) = broadcast::channel::<Packet>(10);
         return match TcpListener::bind((HOST, port)).await {
             Ok(tcp_stream) => {
                 Logger::debug(&format!("Server listening on port {port}"));
                 return Ok(ServerInstance {
                     scripts,
                     socket: tcp_stream,
+                    transmiter: Arc::new(Mutex::new(tx)),
                     game_state: Arc::new(RwLock::new(game_state)),
                 });
             }
@@ -59,12 +63,9 @@ impl ServerInstance {
     ///
     /// Runs indefinitely. Requires `self` as `Arc` for shared access.
     pub async fn listen(&mut self) {
-        let (tx, _) = broadcast::channel::<Packet>(10);
-        let transmiter = Arc::new(Mutex::new(tx));
-
         loop {
-            let tx = Arc::clone(&transmiter);
             if let Ok((c_stream, addr)) = self.socket.accept().await {
+                let tx = Arc::clone(&self.transmiter);
                 Logger::info(&format!("{addr}: received request"));
                 let tx = tx.lock().await.subscribe();
 
@@ -143,5 +144,19 @@ impl ServerInstance {
 
         let mut game_state = self.game_state.write().await;
         game_state.fetch_cards_details(cards).await;
+    }
+
+    pub async fn write_state_update(tx: Arc<Mutex<Sender<Packet>>>) {
+        let mut interval = time::interval(std::time::Duration::from_millis(1000));
+        loop {
+            interval.tick().await;
+            let clients = CLIENTS.read().await;
+            if clients.len() > 0 {
+                Logger::info(&format!("Sending game state"));
+                let packet = Packet::new(MessageType::GAMESTATE, b"pretend");
+                let tx = tx.lock().await;
+                let _ = tx.send(packet);
+            }
+        }
     }
 }

@@ -1,8 +1,16 @@
 use config::{Config, File};
 use models::settings::Settings;
-use std::io::Error;
-use tcp::server::ServerInstance;
-use tokio::sync::OnceCell;
+use std::{io::Error, sync::Arc};
+use tcp::{
+    client::CLIENTS,
+    protocol::{MessageType, Packet},
+    server::ServerInstance,
+};
+use tokio::{
+    sync::{broadcast::Sender, Mutex, OnceCell},
+    time,
+};
+use utils::logger::Logger;
 
 mod game;
 mod models;
@@ -26,6 +34,12 @@ async fn main() -> Result<(), Error> {
 
     let port = 8000;
     if let Ok(mut server) = ServerInstance::create_instance(port).await {
+        tokio::spawn({
+            let server_clone = Arc::new(&server);
+            let tx = Arc::clone(&server_clone.transmiter);
+            async move { ServerInstance::write_state_update(tx).await }
+        });
+
         server.listen().await;
     }
 
