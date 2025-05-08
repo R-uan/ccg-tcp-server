@@ -14,15 +14,15 @@ use crate::utils::logger::Logger;
 
 pub struct ScriptManager {
     pub lua: Arc<Lua>,
-    pub core: Mutex<HashMap<String, mlua::Function>>,
-    pub cards: Mutex<HashMap<String, mlua::Function>>,
-    pub effects: Mutex<HashMap<String, mlua::Function>>,
-    pub triggers: Mutex<HashMap<String, mlua::Function>>,
+    pub core: Mutex<HashMap<String, Function>>,
+    pub cards: Mutex<HashMap<String, Function>>,
+    pub effects: Mutex<HashMap<String, Function>>,
+    pub triggers: Mutex<HashMap<String, Function>>,
 }
 
 impl ScriptManager {
     pub fn new_vm() -> Self {
-        let lua = mlua::Lua::new();
+        let lua = Lua::new();
         return Self {
             lua: Arc::new(lua),
             core: Mutex::new(HashMap::new()),

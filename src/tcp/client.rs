@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{Arc, LazyLock},
-    thread::sleep,
     time::Duration,
 };
 
@@ -133,7 +132,7 @@ impl Client {
 
             if stream.write_all(&packet_data).await.is_err() {
                 Logger::error(&format!("{}: failed to send packet. [{}]", addr, tries));
-                sleep(Duration::from_millis(500));
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 tries += 1;
                 continue;
             }

@@ -32,11 +32,11 @@ impl Player {
     /// - `Ok(Player)` if parsing succeeds
     /// - `Err(InvalidPlayerPayload)` if UTF-8 is invalid or format is incorrect
     pub async fn new(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
-        match serde_cbor::from_slice::<ConnRequest>(payload) {
+        return match serde_cbor::from_slice::<ConnRequest>(payload) {
             Err(error) => {
                 let reason = error.to_string();
                 Logger::error(&format!("{}", &reason));
-                return Err(PlayerConnectionError::InvalidPlayerPayload(reason));
+                Err(PlayerConnectionError::InvalidPlayerPayload(reason))
             }
             Ok(request) => {
                 let player_profile = Player::get_player_profile(&request.token).await?;
@@ -48,7 +48,7 @@ impl Player {
                     player_deck.cards.len()
                 ));
 
-                return Ok(Player {
+                Ok(Player {
                     id: request.id,
                     current_deck: player_deck,
                     player_token: request.token,
@@ -56,7 +56,7 @@ impl Player {
                     username: player_profile.username,
                     player_color: request.player_color,
                     current_deck_id: request.current_deck_id,
-                });
+                })
             }
         }
     }

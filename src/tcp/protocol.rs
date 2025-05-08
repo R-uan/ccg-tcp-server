@@ -238,9 +238,9 @@ impl ProtocolHeader {
             ));
         }
 
-        match MessageType::try_from(bytes[0]) {
+        return match MessageType::try_from(bytes[0]) {
             Err(_) => {
-                return Err(ProtocolError::InvalidHeaderError(
+                Err(ProtocolError::InvalidHeaderError(
                     "Invalid message type.".to_string(),
                 ))
             }
@@ -248,11 +248,11 @@ impl ProtocolHeader {
                 let checksum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
                 let payload_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
 
-                return Ok(Self {
+                Ok(Self {
                     header_type,
                     payload_length,
                     checksum,
-                });
+                })
             }
         }
     }
@@ -274,7 +274,7 @@ impl Packet {
     /// Returns an error if the header is invalid.
     pub fn parse(protocol: &[u8]) -> Result<Self, ProtocolError> {
         if protocol.len() < 6 {
-            Logger::error(&format!("Protocol size too smol"));
+            Logger::error(&"Protocol size too smol".to_string());
             return Err(ProtocolError::InvalidPacketError("Too small".to_string()));
         }
 

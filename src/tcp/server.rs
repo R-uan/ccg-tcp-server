@@ -1,4 +1,4 @@
-use std::{io::Error, net::Ipv4Addr, ops::Deref, sync::Arc};
+use std::{io::Error, net::Ipv4Addr, sync::Arc};
 
 use tokio::{
     net::TcpListener,
@@ -152,7 +152,7 @@ impl ServerInstance {
             interval.tick().await;
             let clients = CLIENTS.read().await;
             if clients.len() > 0 {
-                Logger::info(&format!("Sending game state"));
+                Logger::info(&"Sending game state".to_string());
                 let packet = Packet::new(MessageType::GAMESTATE, b"pretend");
                 let tx = tx.lock().await;
                 let _ = tx.send(packet);

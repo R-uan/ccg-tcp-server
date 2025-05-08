@@ -59,9 +59,9 @@ impl LuaContext {
     pub fn to_table(&self, lua: &mlua::Lua) -> Result<mlua::Table, mlua::Error> {
         let context_value = lua.to_value(&self)?;
         Logger::info("Works I guess ?");
-        match context_value.as_table() {
-            Some(table) => return Ok(table.to_owned()),
-            None => return Err(mlua::Error::BindError),
+        return match context_value.as_table() {
+            Some(table) => Ok(table.to_owned()),
+            None => Err(mlua::Error::BindError),
         }
     }
 }

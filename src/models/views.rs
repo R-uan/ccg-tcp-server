@@ -1,5 +1,6 @@
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
-
+use crate::game::player::Player;
 use super::deck::CardRef;
 
 #[derive(Serialize, Clone)]
@@ -22,6 +23,23 @@ pub struct PlayerView {
     pub board: BoardView,
     pub graveyard_size: usize,
     pub graveyard: GraveyardView,
+}
+
+impl PlayerView {
+    pub fn from_player(player: Arc<&Player>) -> Self {
+        PlayerView {
+            id: player.id.clone(),
+            health: 30,
+            mana: 1,
+
+            hand_size: 0,
+            board: BoardView::default(),
+            deck_size: player.current_deck.cards.len(),
+            graveyard: GraveyardView::default(),
+            graveyard_size: 0,
+            current_hand: [None, None, None, None, None, None, None, None, None, None],
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Debug, Deserialize)]
