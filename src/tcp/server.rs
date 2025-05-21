@@ -28,7 +28,7 @@ pub struct ServerInstance {
     pub game_state: Arc<RwLock<GameState>>,
     pub scripts: Arc<RwLock<ScriptManager>>,
     pub transmitter: Arc<Mutex<Sender<Packet>>>,
-    pub players: Arc<RwLock<HashMap<String, Client>>>,
+    pub players: Arc<RwLock<HashMap<String, Arc<Client>>>>,
 }
 
 impl ServerInstance {

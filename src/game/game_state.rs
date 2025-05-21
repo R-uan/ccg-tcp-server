@@ -39,21 +39,6 @@ impl GameState {
         return Box::new(b"Pretend this is the wrapped game state".to_owned());
     }
     
-    // pub fn add_players(&mut self, blue: Arc<&Player>, red: Arc<&Player>) {
-    //     let blue_player = PrivatePlayerView::from_player(blue);
-    //     let red_player = PrivatePlayerView::from_player(red);
-    // 
-    //     self.blue_player = blue_player.id.to_owned();
-    //     self.red_player = red_player.id.to_owned();
-    // 
-    //     self.players.insert(
-    //         blue_player.id.to_owned(),
-    //         Arc::new(RwLock::new(blue_player)),
-    //     );
-    //     self.players
-    //         .insert(red_player.id.to_owned(), Arc::new(RwLock::new(red_player)));
-    // }
-    
     pub async fn add_player(&mut self, player: Arc<Player>) {
         let player_view = PrivatePlayerView::from_player(player.clone());
         let player_view_guard = Arc::new(RwLock::new(player_view));

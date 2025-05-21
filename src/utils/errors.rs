@@ -20,11 +20,14 @@ pub enum PlayerConnectionError {
 
     #[error("Player does not have permission to access deck")]
     UnauthorizedDeckError,
+    
+    #[error("{0}")]
+    InternalError(String)
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
-    #[error("Could not successfuly parse protocol header: {0}")]
+    #[error("Could not successfully parse protocol header: {0}")]
     InvalidHeaderError(String),
 
     #[error("Invalid packet: {0}")]

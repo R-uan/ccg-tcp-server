@@ -11,9 +11,8 @@ pub struct Player {
     pub id: String,
     pub level: u32,
     pub username: String,
-    pub player_color: String,
-    pub player_token: String,
     pub current_deck: Deck,
+    pub player_token: String,
     pub current_deck_id: String,
 }
 
@@ -36,25 +35,24 @@ impl Player {
             Err(error) => {
                 let reason = error.to_string();
                 Logger::error(&format!("{}", &reason));
-                Err(PlayerConnectionError::InvalidPlayerPayload(reason))
+                Err(PlayerConnectionError::InvalidPlayerPayload(format!("{reason} (ConnRequest CBOR Deserialisation)")))
             }
             Ok(request) => {
-                let player_profile = Player::get_player_profile(&request.token).await?;
+                let player_profile = Player::get_player_profile(&request.auth_token).await?;
                 let player_deck =
-                    Player::get_player_deck(&request.current_deck_id, &request.token).await?;
+                    Player::get_player_deck(&request.current_deck_id, &request.auth_token).await?;
                 Logger::info(&format!(
                     "{}: Fetched deck with: {} cards",
-                    &request.id,
+                    &request.player_id,
                     player_deck.cards.len()
                 ));
 
                 Ok(Player {
-                    id: request.id,
+                    id: request.player_id,
                     current_deck: player_deck,
-                    player_token: request.token,
+                    player_token: request.auth_token,
                     level: player_profile.level,
                     username: player_profile.username,
-                    player_color: request.player_color,
                     current_deck_id: request.current_deck_id,
                 })
             }
@@ -103,7 +101,6 @@ impl Player {
         let settings = SETTINGS.get().expect("Settings not initialized");
         let api_url = format!("{}/api/player/profile", settings.auth_server);
         let reqwest_client = reqwest::Client::new();
-
         return match reqwest_client
             .get(api_url)
             .header(AUTHORIZATION, format!("Bearer {}", token))
@@ -111,10 +108,15 @@ impl Player {
             .await
         {
             Ok(response) => {
+                // Why is reqwest unauthorized not an error, kinda cringe...
+                if (response.status() == StatusCode::UNAUTHORIZED) {
+                    return Err(PlayerConnectionError::UnauthorizedPlayerError);
+                }
+                
                 let result = response
                     .json::<PartialPlayerProfile>()
                     .await
-                    .map_err(|e| PlayerConnectionError::InvalidPlayerPayload(e.to_string()));
+                    .map_err(|_| PlayerConnectionError::InvalidPlayerPayload("Failed to deserialize player profile".to_string()));
                 result
             }
 

@@ -1,17 +1,12 @@
 use super::protocol::{MessageType, Packet, Protocol};
-use crate::tcp::server::ServerInstance;
-use crate::{
-    game::player::Player,
-    utils::logger::Logger,
-};
+use crate::{game::player::Player, utils::logger::Logger};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
-    sync::{Arc, LazyLock}
-    ,
+    sync::{Arc, LazyLock},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncReadExt,
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
@@ -49,7 +44,13 @@ impl Client {
     ///
     /// # Returns
     /// An `Arc<Client>` ready for use in async tasks.
-    pub fn new(read_stream: OwnedReadHalf, write_stream: OwnedWriteHalf, addr: SocketAddr, player: Player, protocol: Arc<Protocol>) -> Self {
+    pub fn new(
+        read_stream: OwnedReadHalf,
+        write_stream: OwnedWriteHalf,
+        addr: SocketAddr,
+        player: Player,
+        protocol: Arc<Protocol>,
+    ) -> Self {
         return Self {
             addr,
             protocol,
@@ -68,18 +69,11 @@ impl Client {
     /// - Verifies checksums and sends error responses if validation fails.
     ///
     /// Exits the loop (and drops the client) if the connection is closed or an error occurs.
-    pub async fn connect(self: Arc<Self>, server: Arc<ServerInstance>) {
+    pub async fn connect(self: Arc<Self>) {
         let addr = self.addr;
         let mut buffer = [0; 1024];
-
-        // tokio::spawn({
-        //     let self_clone = Arc::clone(&self);
-        //     async move { self_clone.tick_game_state().await }
-        // });
-
-        let protocol = Protocol::new(server);
-        Logger::info(&format!("{addr}: connected"));
-
+        
+        Logger::info(&format!("{addr}: listening to authenticated client"));
         while *self.connected.read().await {
             let mut read_stream_guard = self.read_stream.write().await;
             let bytes_read = match read_stream_guard.read(&mut buffer).await {
@@ -89,87 +83,52 @@ impl Client {
             };
 
             Logger::info(&format!("{addr}: received {bytes_read} bytes"));
-            protocol.handle_incoming(Arc::clone(&self), &buffer[..bytes_read]).await;
+            self.protocol
+                .handle_incoming(Arc::clone(&self), &buffer[..bytes_read])
+                .await;
         }
     }
-
-    // Continuously receives and forwards game state updates to the client.
-    //
-    // - Listens on the broadcast receiver for `Packet` messages.
-    // - Stops if the client disconnects or if sending fails.
-    //
-    // Intended to run in its own task while the client is connected.
-    // async fn tick_game_state(self: Arc<Self>) {
-    //     let transmitter_clone = Arc::clone(&self.protocol.server.transmitter);
-    //     let transmitter_guard = transmitter_clone.lock().await;
-    //     let mut receiver = transmitter_guard.subscribe();
-    //     
-    //     drop(transmitter_guard);
-    //     
-    //     while let Ok(game_state) = receiver.recv().await {
-    //         if !*self.connected.read().await {
-    //             let mut missed_packets = self.missed_packets.write().await;
-    //             missed_packets.push_back(game_state);
-    // 
-    //             Logger::info(&format!(
-    //                 "{}: has {} packets in queue.",
-    //                 self.addr,
-    //                 missed_packets.len()
-    //             ));
-    // 
-    //             if missed_packets.len() >= 60 {
-    //                 missed_packets.pop_back();
-    //             }
-    //         } else { 
-    //             let client = Arc::clone(&self);
-    //             self.protocol.send_or_disconnect(client, &game_state).await;
-    //         }
-    //     }
-    // }
 }
 
 pub struct TemporaryClient {
     pub addr: SocketAddr,
     pub protocol: Arc<Protocol>,
-    pub stream: TcpStream
+    pub stream: TcpStream,
 }
 
 impl TemporaryClient {
     pub async fn new(stream: TcpStream, addr: SocketAddr, protocol: Arc<Protocol>) -> Self {
-        return TemporaryClient { 
-            addr, 
+        return TemporaryClient {
+            addr,
             stream,
-            protocol, 
+            protocol,
         };
     }
 
     pub async fn handle_temp_client(mut self) {
-        let mut attempts = 0;
         let mut buffer = [0; 1024];
-        while attempts < 3 {
-            let bytes = match self.stream.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(_) => break
-            };
+        let addr = self.addr.clone();
+        Logger::debug(&format!("{addr}: Awaiting for client authentication"));
+        let bytes = match self.stream.read(&mut buffer).await {
+            Ok(0) => return,
+            Err(_) => return,
+            Ok(n) => n,
+        };
 
-            match Packet::parse(&buffer[..bytes]) {
-                Ok(packet) => {
-                    if packet.header.header_type == MessageType::Connect {
-                        let self_clone = Arc::new(self);
-                        self_clone.protocol.clone().handle_connect(Arc::clone(&self_clone), &packet).await;
-                        return;
-                    } else {
-                        }
-                        attempts += 1;
-                    }
-                Err(_) => { return; }
+        match Packet::parse(&buffer[..bytes]) {
+            Ok(packet) => {
+                if packet.header.header_type == MessageType::Connect {
+                    let temp_arc = Arc::new(self);
+                    let protocol = Arc::clone(&temp_arc.protocol);
+                    if let Err(error) = protocol.handle_connect(temp_arc, &packet).await {
+                        Logger::error(&format!("{addr}: {error}"));
+                    };
+                }
+            }
+            Err(error) => {
+                Logger::error(&format!("{addr}: {error}"));
+                return;
             }
         }
-                        
-        let payload = b"Client exceeded connection attempts [3/3]";
-        Logger::info(&format!("{}: {}", self.addr, String::from_utf8_lossy(payload)));
-        let packet = Packet::new(MessageType::FailedToConnectPlayer, payload);
-        let _ = self.stream.write_all(&packet.wrap_packet()).await;
     }
 }

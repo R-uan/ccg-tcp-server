@@ -1,11 +1,12 @@
 use super::client::{Client, TemporaryClient};
 use crate::tcp::server::ServerInstance;
-use crate::utils::errors::NetworkError;
+use crate::utils::errors::{NetworkError, PlayerConnectionError};
 use crate::{
     game::{lua_context::LuaContext, player::Player},
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
 };
 use std::net::SocketAddr;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -159,32 +160,22 @@ impl Protocol {
         }
     }
 
-    pub async fn handle_connect(
-        self: Arc<Self>,
-        temporary_client: Arc<TemporaryClient>,
-        packet: &Packet,
-    ) {
-        match Player::new(&packet.payload).await {
-            Ok(player) => match Arc::try_unwrap(temporary_client) {
-                Ok(temp) => {
-                    let player_id_clone = player.id.clone();
-                    let addr = temp.addr;
-                    let (read, write) = temp.stream.into_split();
-                    let client = Client::new(read, write, addr, player, Arc::clone(&self));
-                    let mut players_guard = self.server.players.write().await;
-                    players_guard.insert(player_id_clone, client);
-                }
-                Err(_) => {
-                    Logger::info(&"Failed to unwrap temporary client");
-                }
-            },
-            Err(e) => {
-                Logger::info(&format!(
-                    "{}: Player connection error: {}",
-                    temporary_client.addr, e
-                ));
+    pub async fn handle_connect(self: Arc<Self>, temp_client: Arc<TemporaryClient>, packet: &Packet) -> Result<(), PlayerConnectionError> {
+        let player = Player::new(&packet.payload).await?;
+        Logger::info(&format!("{}: Player successfully authenticated [{}].", &temp_client.addr, &player.id));
+        return match Arc::try_unwrap(temp_client) {
+            Ok(temp) => {
+                let player_id_clone = player.id.clone();
+                let addr = temp.addr;
+                let (read, write) = temp.stream.into_split();
+                let client = Arc::new(Client::new(read, write, addr, player, Arc::clone(&self)));
+                let mut players_guard = self.server.players.write().await;
+                players_guard.insert(player_id_clone, Arc::clone(&client));
+                tokio::spawn(async  move { client.connect().await; });
+                return Ok(());
             }
-        }
+            Err(_) => Err(PlayerConnectionError::InternalError("Failed to unwrap temporary client".to_string()))
+        };
     }
 
     /// Gracefully disconnects the client from the server.
@@ -198,49 +189,7 @@ impl Protocol {
         *connected_guard = false;
     }
 
-    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {
-        let game_state_clone = Arc::clone(&self.server.game_state);
-        let game_state_guard = game_state_clone.read().await;
-
-        let player_clone = Arc::clone(&client.player);
-        let player_guard = player_clone.read().await;
-        let script_manager_clone = Arc::clone(&self.server.scripts);
-
-        if game_state_guard.curr_turn == player_guard.player_color {
-            let player_view = game_state_guard.players[&player_guard.id].read().await;
-            let card_actor_id = String::from_utf8_lossy(&packet.payload);
-            if let Some(card_view) = &player_view
-                .current_hand
-                .iter()
-                .flatten()
-                .find(|c| c.id == card_actor_id)
-            {
-                let game_cards_clone = Arc::clone(&game_state_guard.game_cards);
-                let game_cards_guard = game_cards_clone.read().await;
-
-                let find_card = game_cards_guard
-                    .iter()
-                    .find(|c| c.id == card_actor_id)
-                    .unwrap();
-
-                for action in &find_card.on_play {
-                    let lua_context = LuaContext::new(
-                        game_state_clone.clone(),
-                        card_view,
-                        None,
-                        "on_play".to_string(),
-                        action.to_owned(),
-                    )
-                    .await;
-
-                    let lua = script_manager_clone.write().await;
-                    let _ = lua_context.to_table(&lua.lua);
-                }
-            }
-        }
-
-        todo!()
-    }
+    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {}
 
     async fn handle_disconnect(&self, client: Arc<Client>) {
         Logger::warn(&format!("{}: client disconnecting", &client.addr));
@@ -251,7 +200,7 @@ impl Protocol {
     async fn cycle_game_state(&self) {
         let game_state = Arc::clone(&self.server.game_state);
         let game_state_guard = game_state.read().await;
-        
+
         let mut interval = time::interval(std::time::Duration::from_millis(1000));
         while *game_state_guard.ongoing.read().await {
             let game_state_bytes = game_state_guard.wrap_game_state();
@@ -310,9 +259,10 @@ impl ProtocolHeader {
     /// Returns an error if the slice is too short or has an invalid type.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() != 6 || bytes[5] != 0x0A {
-            return Err(ProtocolError::InvalidHeaderError(
-                "Format invalid.".to_string(),
-            ));
+            return Err(ProtocolError::InvalidHeaderError(format!(
+                "Format invalid: {:?}",
+                bytes
+            )));
         }
 
         return match MessageType::try_from(bytes[0]) {
@@ -348,6 +298,9 @@ impl Packet {
     /// Expects a 5-byte header followed by the payload (skips byte 5: delimiter).
     /// Returns an error if the header is invalid.
     pub fn parse(protocol: &[u8]) -> Result<Self, ProtocolError> {
+        for byte in protocol {
+            print!("{:02X} ", byte);
+        }
         if protocol.len() < 6 {
             Logger::error(&"Protocol size too smol".to_string());
             return Err(ProtocolError::InvalidPacketError("Too small".to_string()));
