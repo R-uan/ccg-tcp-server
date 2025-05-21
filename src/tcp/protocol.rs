@@ -1,11 +1,17 @@
-use std::sync::Arc;
-
+use super::client::{Client, TemporaryClient};
+use crate::tcp::server::ServerInstance;
+use crate::utils::errors::NetworkError;
 use crate::{
     game::{lua_context::LuaContext, player::Player},
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
 };
-
-use super::client::Client;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::OwnedWriteHalf;
+use tokio::sync::RwLock;
+use tokio::time;
 
 /// Represents the type of message in a protocol packet.
 ///
@@ -13,32 +19,33 @@ use super::client::Client;
 ///
 /// # Variants
 ///
-/// - `DISCONNECT` - Client is disconnecting.
-/// - `CONNECT` - Client is initiating a connection.
-/// - `GAMESTATE` - Server is sending current game state.
+/// - `Disconnect` - Client is disconnecting.
+/// - `Connect` - Client is initiating a connection.
+/// - `GameState` - Server is sending current game state.
 ///
 /// ### Errors (0xFB–0xFF):
-/// - `ALREADYCONNECTED` - Client is already connected.
-/// - `INVALIDPLAYERDATA` - Malformed or missing player data.
-/// - `INVALIDCHECKSUM` - Payload failed checksum validation.
-/// - `INVALIDHEADER` - Malformed or unrecognized header.
+/// - `AlreadyConnected` - Client is already connected.
+/// - `InvalidPlayerData` - Malformed or missing player data.
+/// - `InvalidChecksum` - Payload failed checksum validation.
+/// - `InvalidHeader` - Malformed or unrecognized header.
 /// - `ERROR` - Generic error.
 #[repr(u8)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageType {
-    DISCONNECT = 0x00,
-    CONNECT = 0x01,
-    PING = 0x02,
+    Disconnect = 0x00,
+    Connect = 0x01,
+    Ping = 0x02,
 
-    GAMESTATE = 0x10,
+    GameState = 0x10,
 
-    PLAYCARD = 0x11,
-    ATTACKPLAYER = 0x12,
+    PlayCard = 0x11,
+    AttackPlayer = 0x12,
 
-    INVALIDHEADER = 0xFA,
-    ALREADYCONNECTED = 0xFB,
-    INVALIDPLAYERDATA = 0xFC,
-    INVALIDCHECKSUM = 0xFD,
+    InvalidHeader = 0xFA,
+    AlreadyConnected = 0xFB,
+    InvalidPlayerData = 0xFC,
+    InvalidChecksum = 0xFD,
+    FailedToConnectPlayer = 0xF0,
     ERROR = 0xFE,
 }
 
@@ -53,14 +60,14 @@ impl TryFrom<u8> for MessageType {
     /// Useful for deserializing incoming packets.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x00 => Ok(MessageType::DISCONNECT),
-            0x01 => Ok(MessageType::CONNECT),
+            0x00 => Ok(MessageType::Disconnect),
+            0x01 => Ok(MessageType::Connect),
 
-            0x10 => Ok(MessageType::GAMESTATE),
-            0x11 => Ok(MessageType::PLAYCARD),
-            0x12 => Ok(MessageType::ATTACKPLAYER),
+            0x10 => Ok(MessageType::GameState),
+            0x11 => Ok(MessageType::PlayCard),
+            0x12 => Ok(MessageType::AttackPlayer),
 
-            0x02 => Ok(MessageType::PING),
+            0x02 => Ok(MessageType::Ping),
             0xFE => Ok(MessageType::ERROR),
             _ => Err(()),
         }
@@ -68,111 +75,166 @@ impl TryFrom<u8> for MessageType {
 }
 
 pub struct Protocol {
-    client: Arc<Client>,
+    pub server: Arc<ServerInstance>,
 }
 
 impl Protocol {
-    pub fn new(client: Arc<Client>) -> Self {
-        return Protocol { client };
+    pub fn new(server: Arc<ServerInstance>) -> Self {
+        return Protocol { server };
     }
 
-    pub async fn handle_incoming(&self, buffer: &[u8]) {
-        let addr = self.client.addr;
+    pub async fn handle_incoming(&self, client: Arc<Client>, buffer: &[u8]) {
+        let addr = client.addr;
         if let Ok(packet) = Packet::parse(&buffer) {
-            Logger::info(&format!("{addr}: packet sucessfuly parsed"));
+            Logger::info(&format!("{addr}: packet successfully parsed."));
             if !CheckSum::check(&packet.header.checksum, &packet.payload) {
-                Logger::error(&format!("{addr}: checksum check failed"));
-                let packet = Packet::new(MessageType::INVALIDCHECKSUM, b"");
-                self.client.send_or_disconnect(&packet).await;
+                Logger::error(&format!("{addr}: invalid checksum."));
+                let packet = Packet::new(MessageType::InvalidChecksum, b"");
+                self.send_or_disconnect(client, &packet).await;
+                return;
             }
-
-            self.handle_packet(&packet).await
+            self.handle_packet(client, &packet).await
         } else {
-            Logger::info(&format!("{addr}: packet couldn't be parsed"));
+            Logger::info(&format!("{addr}: packet couldn't be parsed."));
         }
     }
 
-    async fn handle_packet(&self, packet: &Packet) {
+    /// Attempts to send a packet to the client, retrying up to 3 times on failure.
+    ///
+    /// - Serializes the packet and writes it to the client's stream.
+    /// - Waits 500ms between retries if sending fails.
+    /// - Returns `Err(PackageWriteError)` after 3 failed attempts.
+    ///
+    /// Logs all outcomes
+    async fn send_packet(
+        &self,
+        write_half: Arc<RwLock<OwnedWriteHalf>>,
+        addr: SocketAddr,
+        packet: &Packet,
+    ) -> Result<(), NetworkError> {
+        let mut tries = 0;
+        while tries < 3 {
+            let packet_data = packet.wrap_packet();
+            let mut stream_guard = write_half.write().await;
+            if stream_guard.write_all(&packet_data).await.is_err() {
+                Logger::error(&format!(
+                    "{}: failed to send packet. Retrying... [{}]",
+                    addr, tries
+                ));
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                tries += 1;
+                continue;
+            }
+
+            Logger::info(&format!("{}: {} bytes sent", addr, packet_data.len()));
+            return Ok(());
+        }
+        return Err(NetworkError::PackageWriteError("unknown error".to_string()));
+    }
+
+    /// Sends a packet to the client, disconnecting if the send fails.
+    ///
+    /// Useful for simplifying repeated send-and-disconnect patterns.
+    /// Prevents duplicated error handling logic throughout packet handling.
+    async fn send_or_disconnect(&self, client: Arc<Client>, packet: &Packet) {
+        if self
+            .send_packet(client.write_stream.clone(), client.addr, packet)
+            .await
+            .is_err()
+        {
+            self.disconnect(client).await;
+        }
+    }
+
+    async fn handle_packet(&self, client: Arc<Client>, packet: &Packet) {
         let message_type = &packet.header.header_type;
         match message_type {
-            MessageType::CONNECT => self.handle_connect(packet).await,
-            MessageType::DISCONNECT => self.handle_disconnect().await,
-            MessageType::PLAYCARD => self.handle_play_card(packet).await,
+            MessageType::Disconnect => self.handle_disconnect(client).await,
+            MessageType::PlayCard => self.handle_play_card(client, packet).await,
             _ => {
-                Logger::warn(&format!("{}: invalid header", &self.client.addr));
-                let packet = Packet::new(MessageType::INVALIDHEADER, b"");
-                self.client.send_or_disconnect(&packet).await;
+                Logger::warn(&format!("{}: invalid header", &client.addr));
+                let packet = Packet::new(MessageType::InvalidHeader, b"");
+                self.send_or_disconnect(client, &packet).await;
             }
         }
     }
 
-    async fn handle_connect(&self, packet: &Packet) {
-        let addr = self.client.addr;
-        let mut player_guard = self.client.player.write().await;
-        if player_guard.is_some() {
-            Logger::warn(&format!("{}: player already connected", addr));
-            let payload = b"this stream already has a client attached to it";
-            let packet = Packet::new(MessageType::ALREADYCONNECTED, payload);
-            self.client.send_or_disconnect(&packet).await;
-        }
-
+    pub async fn handle_connect(
+        self: Arc<Self>,
+        temporary_client: Arc<TemporaryClient>,
+        packet: &Packet,
+    ) {
         match Player::new(&packet.payload).await {
-            Ok(player) => {
-                Logger::info(&format!("{}: player connected [{}]", addr, &player.id));
-
-                *player_guard = Some(player);
-                let payload = b"yipee, player connected";
-                let packet = Packet::new(MessageType::CONNECT, payload);
-                self.client.send_or_disconnect(&packet).await;
-            }
+            Ok(player) => match Arc::try_unwrap(temporary_client) {
+                Ok(temp) => {
+                    let player_id_clone = player.id.clone();
+                    let addr = temp.addr;
+                    let (read, write) = temp.stream.into_split();
+                    let client = Client::new(read, write, addr, player, Arc::clone(&self));
+                    let mut players_guard = self.server.players.write().await;
+                    players_guard.insert(player_id_clone, client);
+                }
+                Err(_) => {
+                    Logger::info(&"Failed to unwrap temporary client");
+                }
+            },
             Err(e) => {
-                Logger::info(&format!("{}: Player connection error: {}", addr, e));
-                let packet = Packet::new(MessageType::INVALIDPLAYERDATA, b"");
-                self.client.send_or_disconnect(&packet).await;
+                Logger::info(&format!(
+                    "{}: Player connection error: {}",
+                    temporary_client.addr, e
+                ));
             }
         }
     }
 
-    async fn handle_play_card(&self, packet: &Packet) {
-        let gs_clone = Arc::clone(&self.client.game_state);
-        let gs_guard = gs_clone.read().await;
+    /// Gracefully disconnects the client from the server.
+    ///
+    /// - Logs the disconnection.
+    /// - Removes the client from the global `CLIENTS` map.
+    /// - Sets its `connected` flag to `false`.
+    async fn disconnect(&self, client: Arc<Client>) {
+        Logger::info(&format!("{}: disconnecting", &client.addr));
+        let mut connected_guard = client.connected.write().await;
+        *connected_guard = false;
+    }
 
-        let player_clone = Arc::clone(&self.client.player);
+    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {
+        let game_state_clone = Arc::clone(&self.server.game_state);
+        let game_state_guard = game_state_clone.read().await;
+
+        let player_clone = Arc::clone(&client.player);
         let player_guard = player_clone.read().await;
+        let script_manager_clone = Arc::clone(&self.server.scripts);
 
-        let scripts_clone = Arc::clone(&gs_guard.lua_scripts);
+        if game_state_guard.curr_turn == player_guard.player_color {
+            let player_view = game_state_guard.players[&player_guard.id].read().await;
+            let card_actor_id = String::from_utf8_lossy(&packet.payload);
+            if let Some(card_view) = &player_view
+                .current_hand
+                .iter()
+                .flatten()
+                .find(|c| c.id == card_actor_id)
+            {
+                let game_cards_clone = Arc::clone(&game_state_guard.game_cards);
+                let game_cards_guard = game_cards_clone.read().await;
 
-        if let Some(player) = &*player_guard {
-            if gs_guard.curr_turn == player.player_color {
-                let player_view = gs_guard.players[&player.id].read().await;
-                let card_actor_id = String::from_utf8_lossy(&packet.payload);
-                if let Some(card_view) = &player_view
-                    .current_hand
+                let find_card = game_cards_guard
                     .iter()
-                    .flatten()
                     .find(|c| c.id == card_actor_id)
-                {
-                    let game_cards_clone = Arc::clone(&gs_guard.game_cards);
-                    let game_cards_guard = game_cards_clone.read().await;
+                    .unwrap();
 
-                    let find_card = game_cards_guard
-                        .iter()
-                        .find(|c| c.id == card_actor_id)
-                        .unwrap();
+                for action in &find_card.on_play {
+                    let lua_context = LuaContext::new(
+                        game_state_clone.clone(),
+                        card_view,
+                        None,
+                        "on_play".to_string(),
+                        action.to_owned(),
+                    )
+                    .await;
 
-                    for action in &find_card.on_play {
-                        let lua_context = LuaContext::new(
-                            &gs_guard,
-                            card_view,
-                            None,
-                            "on_play".to_string(),
-                            action.to_owned(),
-                        )
-                        .await;
-
-                        let lua = scripts_clone.write().await;
-                        let _ = lua_context.to_table(&lua.lua);
-                    }
+                    let lua = script_manager_clone.write().await;
+                    let _ = lua_context.to_table(&lua.lua);
                 }
             }
         }
@@ -180,10 +242,25 @@ impl Protocol {
         todo!()
     }
 
-    async fn handle_disconnect(&self) {
-        Logger::warn(&format!("{}: client disconnecting", &self.client.addr));
-        let packet = Packet::new(MessageType::DISCONNECT, b"");
-        self.client.send_or_disconnect(&packet).await;
+    async fn handle_disconnect(&self, client: Arc<Client>) {
+        Logger::warn(&format!("{}: client disconnecting", &client.addr));
+        let packet = Packet::new(MessageType::Disconnect, b"");
+        self.send_or_disconnect(client, &packet).await;
+    }
+
+    async fn cycle_game_state(&self) {
+        let game_state = Arc::clone(&self.server.game_state);
+        let game_state_guard = game_state.read().await;
+        
+        let mut interval = time::interval(std::time::Duration::from_millis(1000));
+        while *game_state_guard.ongoing.read().await {
+            let game_state_bytes = game_state_guard.wrap_game_state();
+            let transmitter_clone = Arc::clone(&self.server.transmitter);
+            let transmitter_guard = transmitter_clone.lock().await;
+            let game_state_packet = Packet::new(MessageType::GameState, &game_state_bytes);
+            let _ = transmitter_guard.send(game_state_packet);
+            interval.tick().await;
+        }
     }
 }
 
@@ -239,11 +316,9 @@ impl ProtocolHeader {
         }
 
         return match MessageType::try_from(bytes[0]) {
-            Err(_) => {
-                Err(ProtocolError::InvalidHeaderError(
-                    "Invalid message type.".to_string(),
-                ))
-            }
+            Err(_) => Err(ProtocolError::InvalidHeaderError(
+                "Invalid message type.".to_string(),
+            )),
             Ok(header_type) => {
                 let checksum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
                 let payload_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
@@ -254,7 +329,7 @@ impl ProtocolHeader {
                     checksum,
                 })
             }
-        }
+        };
     }
 }
 
@@ -313,9 +388,9 @@ mod protocol_header_tests {
     #[test]
     fn test_protocol_header_creation() {
         let payload = &[0x10, 0x20, 0x30];
-        let header = ProtocolHeader::new(MessageType::PING, payload);
+        let header = ProtocolHeader::new(MessageType::Ping, payload);
 
-        assert_eq!(header.header_type, MessageType::PING);
+        assert_eq!(header.header_type, MessageType::Ping);
         assert_eq!(header.payload_length, 3);
         assert_eq!(header.checksum, CheckSum::new(payload) as i16);
     }
@@ -323,11 +398,11 @@ mod protocol_header_tests {
     #[test]
     fn test_protocol_header_wrap_header() {
         let payload = &[0xAA, 0xBB];
-        let header = ProtocolHeader::new(MessageType::PING, payload);
+        let header = ProtocolHeader::new(MessageType::Ping, payload);
         let bytes = header.wrap_header();
 
         assert_eq!(bytes.len(), 6);
-        assert_eq!(bytes[0], MessageType::PING as u8);
+        assert_eq!(bytes[0], MessageType::Ping as u8);
         assert_eq!(bytes[1], 0x00); // high byte of payload length
         assert_eq!(bytes[2], 0x02); // low byte of payload length
 
@@ -341,11 +416,11 @@ mod protocol_header_tests {
     #[test]
     fn test_protocol_header_from_bytes_valid() {
         let payload = &[0x01, 0x02];
-        let header = ProtocolHeader::new(MessageType::PING, payload);
+        let header = ProtocolHeader::new(MessageType::Ping, payload);
         let bytes = header.wrap_header();
 
         let parsed = ProtocolHeader::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.header_type, MessageType::PING);
+        assert_eq!(parsed.header_type, MessageType::Ping);
         assert_eq!(parsed.payload_length, 2);
         assert_eq!(parsed.checksum, CheckSum::new(payload) as i16);
     }
@@ -380,9 +455,9 @@ mod protocol_tests {
     #[test]
     fn test_packet_new_and_fields() {
         let payload = &[0xDE, 0xAD, 0xBE, 0xEF];
-        let packet = Packet::new(MessageType::PING, payload);
+        let packet = Packet::new(MessageType::Ping, payload);
 
-        assert_eq!(packet.header.header_type, MessageType::PING);
+        assert_eq!(packet.header.header_type, MessageType::Ping);
         assert_eq!(packet.header.payload_length, 4);
         assert_eq!(packet.header.checksum, CheckSum::new(payload) as i16);
         assert_eq!(&*packet.payload, payload);
@@ -391,7 +466,7 @@ mod protocol_tests {
     #[test]
     fn test_packet_wrap_packet() {
         let payload = &[0x42, 0x24];
-        let packet = Packet::new(MessageType::PING, payload);
+        let packet = Packet::new(MessageType::Ping, payload);
         let raw = packet.wrap_packet();
 
         // Should be 6 bytes for header + 2 bytes for payload
@@ -406,13 +481,13 @@ mod protocol_tests {
     #[test]
     fn test_packet_parse_valid() {
         let payload = &[0x01, 0x02, 0x03];
-        let original = Packet::new(MessageType::PING, payload);
+        let original = Packet::new(MessageType::Ping, payload);
         let raw = original.wrap_packet();
 
         let parsed = Packet::parse(&raw).unwrap();
         assert_eq!(
             parsed.header.header_type,
-            MessageType::PING,
+            MessageType::Ping,
             "HeaderType does not match"
         );
         assert_eq!(

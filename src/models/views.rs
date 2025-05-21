@@ -4,14 +4,34 @@ use crate::game::player::Player;
 use super::deck::CardRef;
 
 #[derive(Serialize, Clone)]
-pub struct GameStateView {
+pub struct PrivateGameStateView {
     pub turn: u32,
-    pub red_player: PlayerView,
-    pub blue_player: PlayerView,
+    pub red_player: PrivatePlayerView,
+    pub blue_player: PrivatePlayerView,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PublicGameStateView {
+    pub turn: u32,
+    pub red_player: PublicPlayerView,
+    pub blue_player: PublicPlayerView,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PublicPlayerView {
+    pub id: String,
+    pub health: i32,
+    pub mana: u32,
+
+    pub hand_size: usize,
+    pub deck_size: usize,
+    pub graveyard_size: usize,
+    
+    pub board: BoardView,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PlayerView {
+pub struct PrivatePlayerView {
     pub id: String,
     pub health: i32,
     pub mana: u32,
@@ -25,9 +45,9 @@ pub struct PlayerView {
     pub graveyard: GraveyardView,
 }
 
-impl PlayerView {
-    pub fn from_player(player: Arc<&Player>) -> Self {
-        PlayerView {
+impl PrivatePlayerView {
+    pub fn from_player(player: Arc<Player>) -> Self {
+        PrivatePlayerView {
             id: player.id.clone(),
             health: 30,
             mana: 1,

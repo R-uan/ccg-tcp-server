@@ -25,14 +25,9 @@ async fn main() -> Result<(), Error> {
         .unwrap();
 
     let port = 8000;
-    if let Ok(mut server) = ServerInstance::create_instance(port).await {
-        tokio::spawn({
-            let server_clone = Arc::new(&server);
-            let tx = Arc::clone(&server_clone.transmiter);
-            async move { ServerInstance::write_state_update(tx).await }
-        });
-
-        server.listen().await;
+    if let Ok(server) = ServerInstance::create_instance(port).await {
+        let server_arc = Arc::new(server);
+        Arc::clone(&server_arc).listen().await;
     }
 
     Ok(())
