@@ -36,7 +36,8 @@ pub enum MessageType {
     Disconnect = 0x00,
     Connect = 0x01,
     Ping = 0x02,
-
+    Reconnect = 0x03,
+    
     GameState = 0x10,
 
     PlayCard = 0x11,
@@ -63,12 +64,13 @@ impl TryFrom<u8> for MessageType {
         match value {
             0x00 => Ok(MessageType::Disconnect),
             0x01 => Ok(MessageType::Connect),
+            0x02 => Ok(MessageType::Ping),
+            0x03 => Ok(MessageType::Reconnect),
 
             0x10 => Ok(MessageType::GameState),
             0x11 => Ok(MessageType::PlayCard),
             0x12 => Ok(MessageType::AttackPlayer),
 
-            0x02 => Ok(MessageType::Ping),
             0xFE => Ok(MessageType::ERROR),
             _ => Err(()),
         }
@@ -85,15 +87,17 @@ impl Protocol {
     }
 
     pub async fn handle_incoming(&self, client: Arc<Client>, buffer: &[u8]) {
-        let addr = client.addr;
+        let addr = client.addr.read().await;
         if let Ok(packet) = Packet::parse(&buffer) {
             Logger::info(&format!("{addr}: packet successfully parsed."));
             if !CheckSum::check(&packet.header.checksum, &packet.payload) {
                 Logger::error(&format!("{addr}: invalid checksum."));
+                drop(addr);
                 let packet = Packet::new(MessageType::InvalidChecksum, b"");
                 self.send_or_disconnect(client, &packet).await;
                 return;
             }
+            drop(addr);
             self.handle_packet(client, &packet).await
         } else {
             Logger::info(&format!("{addr}: packet couldn't be parsed."));
@@ -138,8 +142,9 @@ impl Protocol {
     /// Useful for simplifying repeated send-and-disconnect patterns.
     /// Prevents duplicated error handling logic throughout packet handling.
     async fn send_or_disconnect(&self, client: Arc<Client>, packet: &Packet) {
+        let addr = client.addr.read().await.clone();
         if self
-            .send_packet(client.write_stream.clone(), client.addr, packet)
+            .send_packet(client.write_stream.clone(), addr, packet)
             .await
             .is_err()
         {
@@ -153,16 +158,26 @@ impl Protocol {
             MessageType::Disconnect => self.handle_disconnect(client).await,
             MessageType::PlayCard => self.handle_play_card(client, packet).await,
             _ => {
-                Logger::warn(&format!("{}: invalid header", &client.addr));
+                {
+                    let addr = client.addr.read().await;
+                    Logger::warn(&format!("{addr}: invalid header"));
+                }
                 let packet = Packet::new(MessageType::InvalidHeader, b"");
                 self.send_or_disconnect(client, &packet).await;
             }
         }
     }
 
-    pub async fn handle_connect(self: Arc<Self>, temp_client: Arc<TemporaryClient>, packet: &Packet) -> Result<(), PlayerConnectionError> {
+    pub async fn handle_connect(
+        self: Arc<Self>,
+        temp_client: Arc<TemporaryClient>,
+        packet: &Packet,
+    ) -> Result<(), PlayerConnectionError> {
         let player = Player::new(&packet.payload).await?;
-        Logger::info(&format!("{}: Player successfully authenticated [{}].", &temp_client.addr, &player.id));
+        Logger::info(&format!(
+            "{}: Player successfully authenticated [{}].",
+            &temp_client.addr, &player.id
+        ));
         return match Arc::try_unwrap(temp_client) {
             Ok(temp) => {
                 let player_id_clone = player.id.clone();
@@ -171,11 +186,57 @@ impl Protocol {
                 let client = Arc::new(Client::new(read, write, addr, player, Arc::clone(&self)));
                 let mut players_guard = self.server.players.write().await;
                 players_guard.insert(player_id_clone, Arc::clone(&client));
-                tokio::spawn(async  move { client.connect().await; });
+                tokio::spawn(async move {
+                    client.connect().await;
+                });
                 return Ok(());
             }
-            Err(_) => Err(PlayerConnectionError::InternalError("Failed to unwrap temporary client".to_string()))
+            Err(_) => Err(PlayerConnectionError::InternalError(
+                "Failed to unwrap temporary client".to_string(),
+            )),
         };
+    }
+
+    pub async fn handle_reconnect(
+        self: Arc<Self>,
+        temp_client: Arc<TemporaryClient>,
+        packet: &Packet,
+    ) -> Result<(), PlayerConnectionError> {
+        Logger::info(&format!("{}: requesting reconnection.", &temp_client.addr));
+        let player = Player::new(&packet.payload).await?;
+        Logger::info(&format!(
+            "{}: has been authenticated as player [{}].",
+            &temp_client.addr, player.id
+        ));
+        let players_map = self.server.players.read().await;
+        if let Some(client) = players_map.get(&player.id) {
+            return match Arc::try_unwrap(temp_client) {
+                Ok(temp) => {
+                    Logger::info(&format!(
+                        "{}: player has been found in match. Attempting reconnection.",
+                        &temp.addr
+                    ));
+
+                    let client_clone = Arc::clone(client);
+                    let (read, write) = temp.stream.into_split();
+
+                    let mut write_stream = client_clone.write_stream.write().await;
+                    let mut read_stream = client.read_stream.write().await;
+                    let mut addr = client.addr.write().await;
+
+                    *write_stream = write;
+                    *read_stream = read;
+                    *addr = temp.addr;
+
+                    return Ok(());
+                }
+                Err(_) => Err(PlayerConnectionError::InternalError(
+                    "Failed to unwrap temporary client".to_string(),
+                )),
+            };
+        } else {
+            return Err(PlayerConnectionError::InternalError("player not found".to_string()));
+        }
     }
 
     /// Gracefully disconnects the client from the server.
@@ -184,7 +245,8 @@ impl Protocol {
     /// - Removes the client from the global `CLIENTS` map.
     /// - Sets its `connected` flag to `false`.
     async fn disconnect(&self, client: Arc<Client>) {
-        Logger::info(&format!("{}: disconnecting", &client.addr));
+        let addr = client.addr.read().await;
+        Logger::info(&format!("{addr}: disconnected"));
         let mut connected_guard = client.connected.write().await;
         *connected_guard = false;
     }
@@ -192,7 +254,10 @@ impl Protocol {
     async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {}
 
     async fn handle_disconnect(&self, client: Arc<Client>) {
-        Logger::warn(&format!("{}: client disconnecting", &client.addr));
+        {
+            let addr = client.addr.read().await;
+            Logger::info(&format!("{addr}: client disconnecting"));
+        }
         let packet = Packet::new(MessageType::Disconnect, b"");
         self.send_or_disconnect(client, &packet).await;
     }

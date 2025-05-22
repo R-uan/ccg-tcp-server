@@ -22,10 +22,10 @@ pub static CLIENTS: LazyLock<ClientState> = LazyLock::new(|| Arc::new(RwLock::ne
 /// Holds connection state, network streams, and optional player data.
 /// All fields are wrapped for safe shared access across async tasks.
 pub struct Client {
-    pub addr: SocketAddr,
     pub protocol: Arc<Protocol>,
     pub player: Arc<RwLock<Player>>,
     pub connected: Arc<RwLock<bool>>,
+    pub addr: Arc<RwLock<SocketAddr>>,
     pub read_stream: Arc<RwLock<OwnedReadHalf>>,
     pub write_stream: Arc<RwLock<OwnedWriteHalf>>,
     pub missed_packets: Arc<RwLock<VecDeque<Packet>>>,
@@ -52,8 +52,8 @@ impl Client {
         protocol: Arc<Protocol>,
     ) -> Self {
         return Self {
-            addr,
             protocol,
+            addr: Arc::new(RwLock::new(addr)),
             player: Arc::new(RwLock::new(player)),
             connected: Arc::new(RwLock::new(true)),
             read_stream: Arc::new(RwLock::new(read_stream)),
@@ -70,7 +70,7 @@ impl Client {
     ///
     /// Exits the loop (and drops the client) if the connection is closed or an error occurs.
     pub async fn connect(self: Arc<Self>) {
-        let addr = self.addr;
+        let addr = self.addr.read().await;
         let mut buffer = [0; 1024];
         
         Logger::info(&format!("{addr}: listening to authenticated client"));
@@ -121,6 +121,12 @@ impl TemporaryClient {
                     let temp_arc = Arc::new(self);
                     let protocol = Arc::clone(&temp_arc.protocol);
                     if let Err(error) = protocol.handle_connect(temp_arc, &packet).await {
+                        Logger::error(&format!("{addr}: {error}"));
+                    };
+                } else if packet.header.header_type == MessageType::Reconnect {
+                    let temp_arc = Arc::new(self);
+                    let protocol = Arc::clone(&temp_arc.protocol);
+                    if let Err(error) = protocol.handle_reconnect(temp_arc, &packet).await {
                         Logger::error(&format!("{addr}: {error}"));
                     };
                 }
