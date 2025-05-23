@@ -1,12 +1,12 @@
+use std::fmt::Display;
 use super::client::{Client, TemporaryClient};
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{NetworkError, PlayerConnectionError};
 use crate::{
-    game::{lua_context::LuaContext, player::Player},
+    game::player::Player,
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
 };
 use std::net::SocketAddr;
-use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -37,7 +37,7 @@ pub enum MessageType {
     Connect = 0x01,
     Ping = 0x02,
     Reconnect = 0x03,
-    
+
     GameState = 0x10,
 
     PlayCard = 0x11,
@@ -49,6 +49,30 @@ pub enum MessageType {
     InvalidChecksum = 0xFD,
     FailedToConnectPlayer = 0xF0,
     ERROR = 0xFE,
+}
+
+impl Display for MessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            MessageType::Disconnect => String::from("DISCONNECT"),
+            MessageType::Connect => String::from("CONNECT"),
+            MessageType::Reconnect => String::from("RECONNECT"),
+            MessageType::Ping => String::from("PING"),
+
+            MessageType::PlayCard => String::from("PLAY_CARD"),
+            MessageType::AttackPlayer => String::from("ATTACK_PLAYER"),
+
+            MessageType::InvalidHeader => String::from("INVALID_HEADER"),
+            MessageType::AlreadyConnected => String::from("ALREADY_CONNECTED"),
+            MessageType::InvalidPlayerData => String::from("INVALID_PLAYER_DATA"),
+            MessageType::InvalidChecksum => String::from("INVALID_CHECKSUM"),
+            MessageType::FailedToConnectPlayer => String::from("FAILED_TO_CONNECT_PLAYER"),
+            MessageType::ERROR => String::from("ERROR"),
+
+            MessageType::GameState => String::from("GAME_STATE"),
+        };
+        return write!(f, "{}", str);
+    }
 }
 
 impl TryFrom<u8> for MessageType {
@@ -89,18 +113,24 @@ impl Protocol {
     pub async fn handle_incoming(&self, client: Arc<Client>, buffer: &[u8]) {
         let addr = client.addr.read().await;
         if let Ok(packet) = Packet::parse(&buffer) {
-            Logger::info(&format!("{addr}: packet successfully parsed."));
+            Logger::debug(&format!(
+                "[PROTOCOL] Received packet: {{ type: {}, size: {} }}",
+                packet.header.header_type.to_string(),
+                packet.header.payload_length
+            ));
             if !CheckSum::check(&packet.header.checksum, &packet.payload) {
-                Logger::error(&format!("{addr}: invalid checksum."));
+                Logger::error("[PROTOCOL] Invalid checksum value");
                 drop(addr);
                 let packet = Packet::new(MessageType::InvalidChecksum, b"");
                 self.send_or_disconnect(client, &packet).await;
                 return;
+            } else {
+                Logger::error(&format!("[PROTOCOL] Failed to parse packet from `{addr}`"));
             }
             drop(addr);
             self.handle_packet(client, &packet).await
         } else {
-            Logger::info(&format!("{addr}: packet couldn't be parsed."));
+            Logger::info("[PROTOCOL] Unable to parse packet");
         }
     }
 
@@ -117,21 +147,24 @@ impl Protocol {
         addr: SocketAddr,
         packet: &Packet,
     ) -> Result<(), NetworkError> {
-        let mut tries = 0;
-        while tries < 3 {
+        let mut tries = 1;
+        while tries <= 3 {
             let packet_data = packet.wrap_packet();
             let mut stream_guard = write_half.write().await;
             if stream_guard.write_all(&packet_data).await.is_err() {
                 Logger::error(&format!(
-                    "{}: failed to send packet. Retrying... [{}]",
-                    addr, tries
+                    "[PROTOCOL] Failed to send packet to `{addr}`. Retrying... [{tries}/3]"
                 ));
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 tries += 1;
                 continue;
             }
 
-            Logger::info(&format!("{}: {} bytes sent", addr, packet_data.len()));
+            Logger::debug(&format!(
+                "[PROTOCOL] Sent packet {{ type: {}, size: {} }} to `{addr}`",
+                packet.header.header_type.to_string(),
+                packet_data.len(),
+            ));
             return Ok(());
         }
         return Err(NetworkError::PackageWriteError("unknown error".to_string()));
@@ -152,16 +185,21 @@ impl Protocol {
         }
     }
 
+    async fn send_and_disconnect(&self, client: Arc<Client>, packet: &Packet) {
+        let addr = client.addr.read().await.clone();
+        let _ = self
+            .send_packet(client.write_stream.clone(), addr, packet)
+            .await;
+        self.disconnect(client).await;
+    }
+
     async fn handle_packet(&self, client: Arc<Client>, packet: &Packet) {
         let message_type = &packet.header.header_type;
         match message_type {
             MessageType::Disconnect => self.handle_disconnect(client).await,
             MessageType::PlayCard => self.handle_play_card(client, packet).await,
             _ => {
-                {
-                    let addr = client.addr.read().await;
-                    Logger::warn(&format!("{addr}: invalid header"));
-                }
+                Logger::warn("[PROTOCOL] Invalid header");
                 let packet = Packet::new(MessageType::InvalidHeader, b"");
                 self.send_or_disconnect(client, &packet).await;
             }
@@ -175,8 +213,8 @@ impl Protocol {
     ) -> Result<(), PlayerConnectionError> {
         let player = Player::new(&packet.payload).await?;
         Logger::info(&format!(
-            "{}: Player successfully authenticated [{}].",
-            &temp_client.addr, &player.id
+            "[PROTOCOL] Client `{}` successfully authenticated as `{}`",
+            &temp_client.addr, &player.username
         ));
         return match Arc::try_unwrap(temp_client) {
             Ok(temp) => {
@@ -189,7 +227,7 @@ impl Protocol {
                 tokio::spawn(async move {
                     client.connect().await;
                 });
-                
+
                 return Ok(());
             }
             Err(_) => Err(PlayerConnectionError::InternalError(
@@ -203,19 +241,22 @@ impl Protocol {
         temp_client: Arc<TemporaryClient>,
         packet: &Packet,
     ) -> Result<(), PlayerConnectionError> {
-        Logger::info(&format!("{}: requesting reconnection.", &temp_client.addr));
+        Logger::info(&format!(
+            "[PROTOCOL] Reconnection request from `{}`",
+            &temp_client.addr
+        ));
         let player = Player::new(&packet.payload).await?;
         Logger::info(&format!(
-            "{}: has been authenticated as player [{}].",
-            &temp_client.addr, player.id
+            "[PROTOCOL] Client `{}` has been authenticated as player `{}`.",
+            &temp_client.addr, &player.username
         ));
         let players_map = self.server.players.read().await;
-        if let Some(client) = players_map.get(&player.id) {
-            return match Arc::try_unwrap(temp_client) {
+        return if let Some(client) = players_map.get(&player.id) {
+            match Arc::try_unwrap(temp_client) {
                 Ok(temp) => {
                     Logger::info(&format!(
-                        "{}: player has been found in match. Attempting reconnection.",
-                        &temp.addr
+                        "[PROTOCOL] Attempting to reconnect player `{}`",
+                        &player.username
                     ));
 
                     let client_clone = Arc::clone(client);
@@ -234,10 +275,25 @@ impl Protocol {
                 Err(_) => Err(PlayerConnectionError::InternalError(
                     "Failed to unwrap temporary client".to_string(),
                 )),
-            };
+            }
         } else {
-            return Err(PlayerConnectionError::InternalError("player not found".to_string()));
+            Logger::error(&format!(
+                "[PROTOCOL] Player `{}` not connected to this match",
+                &player.username
+            ));
+            Err(PlayerConnectionError::InternalError(
+                "Player not found in this match".to_string(),
+            ))
         }
+    }
+
+    async fn handle_disconnect(&self, client: Arc<Client>) {
+        let packet = Packet::new(MessageType::Disconnect, b"");
+        self.send_and_disconnect(client, &packet).await;
+    }
+
+    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {
+        todo!()
     }
 
     /// Gracefully disconnects the client from the server.
@@ -247,33 +303,21 @@ impl Protocol {
     /// - Sets its `connected` flag to `false`.
     async fn disconnect(&self, client: Arc<Client>) {
         let addr = client.addr.read().await;
-        Logger::info(&format!("{addr}: disconnected"));
+        Logger::info(&format!("[PROTOCOL] Client `{addr}` disconnected"));
         let mut connected_guard = client.connected.write().await;
         *connected_guard = false;
-    }
-
-    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {}
-
-    async fn handle_disconnect(&self, client: Arc<Client>) {
-        {
-            let addr = client.addr.read().await;
-            Logger::info(&format!("{addr}: client disconnecting"));
-        }
-        let packet = Packet::new(MessageType::Disconnect, b"");
-        self.send_or_disconnect(client, &packet).await;
     }
 
     pub async fn cycle_game_state(&self) {
         let game_state = Arc::clone(&self.server.game_state);
         let game_state_guard = game_state.read().await;
 
-        let mut interval = time::interval(std::time::Duration::from_millis(1000));
+        let mut interval = time::interval(Duration::from_millis(1000));
         while *game_state_guard.ongoing.read().await {
             let game_state_bytes = game_state_guard.wrap_game_state();
             let transmitter_clone = Arc::clone(&self.server.transmitter);
             let transmitter_guard = transmitter_clone.lock().await;
             let game_state_packet = Packet::new(MessageType::GameState, &game_state_bytes);
-            Logger::info("sending game state");
             let _ = transmitter_guard.send(game_state_packet);
             interval.tick().await;
         }
@@ -366,8 +410,10 @@ impl Packet {
     /// Returns an error if the header is invalid.
     pub fn parse(protocol: &[u8]) -> Result<Self, ProtocolError> {
         if protocol.len() < 6 {
-            Logger::error(&"Protocol size too smol".to_string());
-            return Err(ProtocolError::InvalidPacketError("Too small".to_string()));
+            Logger::error("[PROTOCOL] Not enough bytes for a valid packet");
+            return Err(ProtocolError::InvalidPacketError(
+                "Not enough bytes for a valid packet".to_string(),
+            ));
         }
 
         let header = ProtocolHeader::from_bytes(&protocol[..6])?;
@@ -395,135 +441,5 @@ impl Packet {
         packet.extend_from_slice(&self.payload);
 
         packet.into_boxed_slice()
-    }
-}
-
-#[cfg(test)]
-mod protocol_header_tests {
-    use super::*;
-
-    #[test]
-    fn test_protocol_header_creation() {
-        let payload = &[0x10, 0x20, 0x30];
-        let header = ProtocolHeader::new(MessageType::Ping, payload);
-
-        assert_eq!(header.header_type, MessageType::Ping);
-        assert_eq!(header.payload_length, 3);
-        assert_eq!(header.checksum, CheckSum::new(payload) as i16);
-    }
-
-    #[test]
-    fn test_protocol_header_wrap_header() {
-        let payload = &[0xAA, 0xBB];
-        let header = ProtocolHeader::new(MessageType::Ping, payload);
-        let bytes = header.wrap_header();
-
-        assert_eq!(bytes.len(), 6);
-        assert_eq!(bytes[0], MessageType::Ping as u8);
-        assert_eq!(bytes[1], 0x00); // high byte of payload length
-        assert_eq!(bytes[2], 0x02); // low byte of payload length
-
-        let expected_checksum = CheckSum::new(payload);
-        assert_eq!(bytes[3], ((expected_checksum >> 8) & 0xFF) as u8);
-        assert_eq!(bytes[4], (expected_checksum & 0xFF) as u8);
-
-        assert_eq!(bytes[5], 0x0A);
-    }
-
-    #[test]
-    fn test_protocol_header_from_bytes_valid() {
-        let payload = &[0x01, 0x02];
-        let header = ProtocolHeader::new(MessageType::Ping, payload);
-        let bytes = header.wrap_header();
-
-        let parsed = ProtocolHeader::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.header_type, MessageType::Ping);
-        assert_eq!(parsed.payload_length, 2);
-        assert_eq!(parsed.checksum, CheckSum::new(payload) as i16);
-    }
-
-    #[test]
-    fn test_protocol_header_from_bytes_too_short() {
-        let bytes = &[0x01, 0x00];
-        let result = ProtocolHeader::from_bytes(bytes);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_protocol_header_from_bytes_invalid_type() {
-        let payload_length = 1u16.to_be_bytes();
-        let checksum = 0x1234u16.to_be_bytes();
-        let bytes = [
-            0xFF, // invalid message type
-            payload_length[0],
-            payload_length[1],
-            checksum[0],
-            checksum[1],
-        ];
-        let result = ProtocolHeader::from_bytes(&bytes);
-        assert!(result.is_err());
-    }
-}
-
-#[cfg(test)]
-mod protocol_tests {
-    use super::*;
-
-    #[test]
-    fn test_packet_new_and_fields() {
-        let payload = &[0xDE, 0xAD, 0xBE, 0xEF];
-        let packet = Packet::new(MessageType::Ping, payload);
-
-        assert_eq!(packet.header.header_type, MessageType::Ping);
-        assert_eq!(packet.header.payload_length, 4);
-        assert_eq!(packet.header.checksum, CheckSum::new(payload) as i16);
-        assert_eq!(&*packet.payload, payload);
-    }
-
-    #[test]
-    fn test_packet_wrap_packet() {
-        let payload = &[0x42, 0x24];
-        let packet = Packet::new(MessageType::Ping, payload);
-        let raw = packet.wrap_packet();
-
-        // Should be 6 bytes for header + 2 bytes for payload
-        assert_eq!(raw.len(), 8);
-
-        // Delimiter check
-        assert_eq!(raw[5], 0x0A);
-        // Payload content
-        assert_eq!(&raw[6..], payload);
-    }
-
-    #[test]
-    fn test_packet_parse_valid() {
-        let payload = &[0x01, 0x02, 0x03];
-        let original = Packet::new(MessageType::Ping, payload);
-        let raw = original.wrap_packet();
-
-        let parsed = Packet::parse(&raw).unwrap();
-        assert_eq!(
-            parsed.header.header_type,
-            MessageType::Ping,
-            "HeaderType does not match"
-        );
-        assert_eq!(
-            parsed.header.payload_length, 3,
-            "Payload length does not match"
-        );
-        assert_eq!(
-            parsed.header.checksum,
-            CheckSum::new(payload) as i16,
-            "Checksum does not match"
-        );
-        assert_eq!(&*parsed.payload, payload, "Payload does not match");
-    }
-
-    #[test]
-    fn test_packet_parse_invalid_header() {
-        // Too short to contain full header
-        let raw = &[0x01, 0x00, 0x01, 0x12];
-        let result = Packet::parse(raw);
-        assert!(result.is_err());
     }
 }

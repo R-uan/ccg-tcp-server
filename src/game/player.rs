@@ -34,16 +34,23 @@ impl Player {
         return match serde_cbor::from_slice::<ConnRequest>(payload) {
             Err(error) => {
                 let reason = error.to_string();
-                Logger::error(&format!("{}", &reason));
-                Err(PlayerConnectionError::InvalidPlayerPayload(format!("{reason} (ConnRequest CBOR Deserialisation)")))
+                Logger::error(&format!("[PLAYER] {}", &reason));
+                Err(PlayerConnectionError::InvalidPlayerPayload(format!(
+                    "{reason} (ConnRequest CBOR Deserialisation)"
+                )))
             }
             Ok(request) => {
                 let player_profile = Player::get_player_profile(&request.auth_token).await?;
+                Logger::info(&format!(
+                    "[PLAYER] Fetched `{}`'s profile",
+                    &player_profile.username
+                ));
+
                 let player_deck =
                     Player::get_player_deck(&request.current_deck_id, &request.auth_token).await?;
                 Logger::info(&format!(
-                    "{}: Fetched deck with: {} cards",
-                    &request.player_id,
+                    "[PLAYER] Fetched `{}`'s deck with {} cards",
+                    &player_profile.username,
                     player_deck.cards.len()
                 ));
 
@@ -56,14 +63,13 @@ impl Player {
                     current_deck_id: request.current_deck_id,
                 })
             }
-        }
+        };
     }
 
     async fn get_player_deck(deck_id: &str, token: &str) -> Result<Deck, PlayerConnectionError> {
         let settings = SETTINGS.get().expect("Settings not initialized");
         let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
         let reqwest_client = reqwest::Client::new();
-        Logger::debug(deck_id);
         return match reqwest_client
             .get(api_url)
             .header(AUTHORIZATION, format!("Bearer {}", token))
@@ -81,7 +87,7 @@ impl Player {
                 StatusCode::NOT_FOUND => Err(PlayerConnectionError::DeckNotFound),
                 _ => {
                     let error_msg = response.text().await.unwrap();
-                    Logger::error(&error_msg);
+                    Logger::error(&format!("[PLAYER] {}", &error_msg));
                     Err(PlayerConnectionError::UnexpectedDeckError)
                 }
             },
@@ -109,20 +115,21 @@ impl Player {
         {
             Ok(response) => {
                 // Why is reqwest unauthorized not an error, kinda cringe...
-                if (response.status() == StatusCode::UNAUTHORIZED) {
+                if response.status() == StatusCode::UNAUTHORIZED {
                     return Err(PlayerConnectionError::UnauthorizedPlayerError);
                 }
-                
-                let result = response
-                    .json::<PartialPlayerProfile>()
-                    .await
-                    .map_err(|_| PlayerConnectionError::InvalidPlayerPayload("Failed to deserialize player profile".to_string()));
+
+                let result = response.json::<PartialPlayerProfile>().await.map_err(|_| {
+                    PlayerConnectionError::InvalidPlayerPayload(
+                        "Failed to deserialize player profile".to_string(),
+                    )
+                });
                 result
             }
 
             Err(e) => {
                 let status = e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                Logger::error("Player profile fetch error");
+                Logger::error(&format!("[PLAYER] Profile fetch error ({})", status));
                 return match status {
                     StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedPlayerError),
                     _ => Err(PlayerConnectionError::UnexpectedPlayerError),

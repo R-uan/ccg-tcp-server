@@ -43,12 +43,12 @@ impl GameState {
         let player_view = PrivatePlayerView::from_player(player.clone());
         let player_view_guard = Arc::new(RwLock::new(player_view));
         
-        if (self.blue_player.is_empty()) {
+        if self.blue_player.is_empty() {
             self.blue_player = player.id.clone();            
-        } else if (self.red_player.is_empty()) {
+        } else if self.red_player.is_empty() {
             self.red_player = player.id.clone();
         } else {
-            Logger::error(&"Both players are already connected");    
+            Logger::warn("[GAME STATE] Both players are already connected");    
         }
         
         self.players.insert(player.id.clone(), player_view_guard);

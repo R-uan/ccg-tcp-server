@@ -1,23 +1,23 @@
-use std::{io::Error, net::Ipv4Addr, sync::Arc};
 use std::collections::HashMap;
+use std::{io::Error, net::Ipv4Addr, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{
         broadcast::{self, Sender},
         Mutex, RwLock,
-    },
-    time,
+    }
+    ,
 };
 
-use crate::{
-    game::{game_state::GameState, script_manager::ScriptManager},
-    utils::logger::Logger,
+use super::{
+    client::Client,
+    protocol::Packet,
 };
 use crate::tcp::client::TemporaryClient;
 use crate::tcp::protocol::Protocol;
-use super::{
-    client::{Client, CLIENTS},
-    protocol::{MessageType, Packet},
+use crate::{
+    game::{game_state::GameState, script_manager::ScriptManager},
+    utils::logger::Logger,
 };
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
@@ -45,12 +45,12 @@ impl ServerInstance {
         let scripts = Arc::new(RwLock::new(lua_vm));
         let scripts_clone = Arc::clone(&scripts);
         // Lua scripting END
-        
+
         let game_state = GameState::new_game(scripts_clone);
         let (tx, _) = broadcast::channel::<Packet>(10);
         return match TcpListener::bind((HOST, port)).await {
             Ok(listener) => {
-                Logger::debug(&format!("Server listening on port {port}"));
+                Logger::debug(&format!("[SERVER] Listening on port `{port}`"));
                 return Ok(ServerInstance {
                     scripts,
                     socket: listener,
@@ -74,15 +74,14 @@ impl ServerInstance {
 
         tokio::spawn({
             let protocol_clone = Arc::clone(&protocol);
-            async move { protocol_clone.cycle_game_state().await } 
+            async move { protocol_clone.cycle_game_state().await }
         });
 
-        
         loop {
-            if let Ok((client_stream, client_addr)) = self.socket.accept().await {
-                Logger::info(&format!("{}: received request", &client_addr));
+            if let Ok((stream, addr)) = self.socket.accept().await {
+                Logger::info(&format!("[CONNECTION] Accepted request from `{addr}`"));
                 let protocol_clone = Arc::clone(&protocol);
-                let temp_client = TemporaryClient::new(client_stream, client_addr, protocol_clone).await;
+                let temp_client = TemporaryClient::new(stream, addr, protocol_clone).await;
                 tokio::spawn(async move {
                     temp_client.handle_temp_client().await;
                 });

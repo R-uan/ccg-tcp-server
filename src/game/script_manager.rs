@@ -39,7 +39,7 @@ impl ScriptManager {
             if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap();
                 if folders.contains(&name) {
-                    Logger::debug(&format!("Reading scripts from: {name} directory"));
+                    Logger::debug(&format!("[SCRIPTS] Reading from: `{name}` directory"));
                     let _ = self.load_file(&path);
                 }
             }
@@ -55,12 +55,12 @@ impl ScriptManager {
                 let name = path.file_name().unwrap().to_string_lossy().to_string();
                 match fs::read_to_string(&path) {
                     Ok(code) => {
-                        Logger::debug(&format!("Loading script: {name}"));
+                        Logger::debug(&format!("[SCRIPTS] Loading script: `{name}`"));
                         let _ = self.lua.load(&code).exec();
                     }
                     Err(e) => {
                         let error = e.to_string();
-                        Logger::error(&format!("Couldn't load {name}: {error}"));
+                        Logger::error(&format!("[SCRIPTS] Couldn't load file `{name}`: {error}"));
                     }
                 }
             }
@@ -84,35 +84,34 @@ impl ScriptManager {
                             Ok(function) => {
                                 if file_name.contains("core") {
                                     Logger::debug(&format!(
-                                        "[CORE] Setting function into map: {func_name}"
+                                        "[CORE] Setting function into map `{func_name}`"
                                     ));
                                     let mut core_guard = self.core.lock().await;
                                     core_guard.insert(func_name, function);
                                 } else if file_name.contains("card") {
                                     Logger::debug(&format!(
-                                        "[CARDS] Setting function into map: {func_name}"
+                                        "[SCRIPTS] [CARDS] Setting function into map `{func_name}`"
                                     ));
                                     let mut card_guard = self.cards.lock().await;
                                     card_guard.insert(func_name, function);
                                 } else if file_name.contains("effect") {
                                     Logger::debug(&format!(
-                                        "[EFFECTS] Setting function into map: {func_name}"
+                                        "[SCRIPTS] [EFFECTS] Setting function into map `{func_name}`"
                                     ));
                                     let mut effects_guard = self.effects.lock().await;
                                     effects_guard.insert(func_name, function);
                                 } else if file_name.contains("trigger") {
                                     Logger::debug(&format!(
-                                        "[TRIGGERS] Setting function into map: {func_name}"
+                                        "[SCRIPTS] [TRIGGERS] Setting function into map `{func_name}`"
                                     ));
                                     let mut triggers_guard = self.triggers.lock().await;
                                     triggers_guard.insert(func_name, function);
                                 }
                             }
-
                             Err(e) => {
                                 let error = e.to_string();
                                 Logger::error(&format!(
-                                    "Unable to set function: {func_name}: {error}"
+                                    "[SCRIPTS] Unable to set function `{func_name}` ({error})"
                                 ));
                             }
                         }

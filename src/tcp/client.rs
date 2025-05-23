@@ -1,9 +1,9 @@
 use super::protocol::{MessageType, Packet, Protocol};
 use crate::{game::player::Player, utils::logger::Logger};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     net::SocketAddr,
-    sync::{Arc, LazyLock},
+    sync::Arc,
 };
 use tokio::{
     io::AsyncReadExt,
@@ -13,9 +13,6 @@ use tokio::{
     },
     sync::RwLock,
 };
-
-type ClientState = Arc<RwLock<HashMap<SocketAddr, Arc<Client>>>>;
-pub static CLIENTS: LazyLock<ClientState> = LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 /// Represents a connected client in the game server.
 ///
@@ -75,10 +72,12 @@ impl Client {
 
         tokio::spawn({
             let self_clone = Arc::clone(&self);
-            async move { self_clone.listen_to_game_state().await; }
+            async move {
+                self_clone.listen_to_game_state().await;
+            }
         });
-        
-        Logger::info(&format!("{addr}: listening to authenticated client"));
+
+        Logger::info(&format!("[CLIENT] Listening to `{addr}` (Authenticated)"));
         while *self.connected.read().await {
             let mut read_stream_guard = self.read_stream.write().await;
             let bytes_read = match read_stream_guard.read(&mut buffer).await {
@@ -87,7 +86,7 @@ impl Client {
                 Err(_) => break,
             };
 
-            Logger::info(&format!("{addr}: received {bytes_read} bytes"));
+            Logger::info(&format!("[CLIENT] `{addr}` has sent {bytes_read} bytes"));
             self.protocol
                 .handle_incoming(Arc::clone(&self), &buffer[..bytes_read])
                 .await;
@@ -103,13 +102,19 @@ impl Client {
                 let addr = self.addr.read().await;
                 let mut missed_packets = self.missed_packets.write().await;
                 missed_packets.push_back(game_state);
-                Logger::info(&format!("{addr}: has {} game state packets in queue.", &missed_packets.len()));
+                Logger::warn(&format!(
+                    "[CLIENT] `{addr}` has {} game state packets in queue",
+                    &missed_packets.len()
+                ));
                 continue;
             }
-            
-            let mut write_stream_clone = Arc::clone(&self.write_stream);
+
+            let write_stream_clone = Arc::clone(&self.write_stream);
             let addr = *Arc::clone(&self.addr).read().await;
-            let _ = self.protocol.send_packet(write_stream_clone, addr, &game_state).await;
+            let _ = self
+                .protocol
+                .send_packet(write_stream_clone, addr, &game_state)
+                .await;
         }
     }
 }
@@ -132,7 +137,9 @@ impl TemporaryClient {
     pub async fn handle_temp_client(mut self) {
         let mut buffer = [0; 1024];
         let addr = self.addr.clone();
-        Logger::debug(&format!("{addr}: Awaiting for client authentication"));
+        Logger::debug(&format!(
+            "[CLIENT] Listening to temporary client `{addr}` for authentication"
+        ));
         let bytes = match self.stream.read(&mut buffer).await {
             Ok(0) => return,
             Err(_) => return,
@@ -145,18 +152,22 @@ impl TemporaryClient {
                     let temp_arc = Arc::new(self);
                     let protocol = Arc::clone(&temp_arc.protocol);
                     if let Err(error) = protocol.handle_connect(temp_arc, &packet).await {
-                        Logger::error(&format!("{addr}: {error}"));
+                        Logger::warn(&format!(
+                            "[CLIENT] Could not authenticate `{addr}` ({error})"
+                        ));
                     };
                 } else if packet.header.header_type == MessageType::Reconnect {
                     let temp_arc = Arc::new(self);
                     let protocol = Arc::clone(&temp_arc.protocol);
                     if let Err(error) = protocol.handle_reconnect(temp_arc, &packet).await {
-                        Logger::error(&format!("{addr}: {error}"));
+                        Logger::warn(&format!(
+                            "[CLIENT] Could not authenticate `{addr}` ({error})"
+                        ));
                     };
                 }
             }
             Err(error) => {
-                Logger::error(&format!("{addr}: {error}"));
+                Logger::error(&format!("[CLIENT] Invalid packet from `{addr}` ({error})"));
                 return;
             }
         }
