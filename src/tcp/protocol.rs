@@ -111,7 +111,7 @@ impl Protocol {
     /// - Returns `Err(PackageWriteError)` after 3 failed attempts.
     ///
     /// Logs all outcomes
-    async fn send_packet(
+    pub async fn send_packet(
         &self,
         write_half: Arc<RwLock<OwnedWriteHalf>>,
         addr: SocketAddr,
@@ -189,6 +189,7 @@ impl Protocol {
                 tokio::spawn(async move {
                     client.connect().await;
                 });
+                
                 return Ok(());
             }
             Err(_) => Err(PlayerConnectionError::InternalError(
@@ -262,7 +263,7 @@ impl Protocol {
         self.send_or_disconnect(client, &packet).await;
     }
 
-    async fn cycle_game_state(&self) {
+    pub async fn cycle_game_state(&self) {
         let game_state = Arc::clone(&self.server.game_state);
         let game_state_guard = game_state.read().await;
 
@@ -272,6 +273,7 @@ impl Protocol {
             let transmitter_clone = Arc::clone(&self.server.transmitter);
             let transmitter_guard = transmitter_clone.lock().await;
             let game_state_packet = Packet::new(MessageType::GameState, &game_state_bytes);
+            Logger::info("sending game state");
             let _ = transmitter_guard.send(game_state_packet);
             interval.tick().await;
         }
@@ -363,9 +365,6 @@ impl Packet {
     /// Expects a 5-byte header followed by the payload (skips byte 5: delimiter).
     /// Returns an error if the header is invalid.
     pub fn parse(protocol: &[u8]) -> Result<Self, ProtocolError> {
-        for byte in protocol {
-            print!("{:02X} ", byte);
-        }
         if protocol.len() < 6 {
             Logger::error(&"Protocol size too smol".to_string());
             return Err(ProtocolError::InvalidPacketError("Too small".to_string()));

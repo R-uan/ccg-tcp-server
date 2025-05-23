@@ -72,6 +72,11 @@ impl Client {
     pub async fn connect(self: Arc<Self>) {
         let addr = self.addr.read().await;
         let mut buffer = [0; 1024];
+
+        tokio::spawn({
+            let self_clone = Arc::clone(&self);
+            async move { self_clone.listen_to_game_state().await; }
+        });
         
         Logger::info(&format!("{addr}: listening to authenticated client"));
         while *self.connected.read().await {
@@ -86,6 +91,25 @@ impl Client {
             self.protocol
                 .handle_incoming(Arc::clone(&self), &buffer[..bytes_read])
                 .await;
+        }
+    }
+
+    async fn listen_to_game_state(self: Arc<Self>) {
+        let protocol_clone = Arc::clone(&self.protocol);
+        let transmitter_clone = Arc::clone(&protocol_clone.server.transmitter);
+        let mut receiver = transmitter_clone.lock().await.subscribe();
+        while let Ok(game_state) = receiver.recv().await {
+            if !*self.connected.read().await {
+                let addr = self.addr.read().await;
+                let mut missed_packets = self.missed_packets.write().await;
+                missed_packets.push_back(game_state);
+                Logger::info(&format!("{addr}: has {} game state packets in queue.", &missed_packets.len()));
+                continue;
+            }
+            
+            let mut write_stream_clone = Arc::clone(&self.write_stream);
+            let addr = *Arc::clone(&self.addr).read().await;
+            let _ = self.protocol.send_packet(write_stream_clone, addr, &game_state).await;
         }
     }
 }

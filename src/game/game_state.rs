@@ -30,7 +30,7 @@ impl GameState {
             red_player: String::new(),
             blue_player: String::new(),
             curr_turn: String::from("Red"),
-            ongoing: Arc::new(RwLock::new(false)),
+            ongoing: Arc::new(RwLock::new(true)),
             game_cards: Arc::new(RwLock::new(Vec::new())),
         }
     }

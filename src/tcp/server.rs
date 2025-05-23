@@ -71,12 +71,13 @@ impl ServerInstance {
     /// Runs indefinitely. Requires `self` as `Arc` for shared access.
     pub async fn listen(self: Arc<Self>) {
         let protocol = Arc::new(Protocol::new(Arc::clone(&self)));
+
         tokio::spawn({
-            let server_clone = Arc::clone(&self);
-            let tx = Arc::clone(&server_clone.transmitter);
-            async move { ServerInstance::write_state_update(tx, server_clone).await }
+            let protocol_clone = Arc::clone(&protocol);
+            async move { protocol_clone.cycle_game_state().await } 
         });
 
+        
         loop {
             if let Ok((client_stream, client_addr)) = self.socket.accept().await {
                 Logger::info(&format!("{}: received request", &client_addr));
@@ -85,22 +86,6 @@ impl ServerInstance {
                 tokio::spawn(async move {
                     temp_client.handle_temp_client().await;
                 });
-            }
-        }
-    }
-
-    pub async fn write_state_update(tx: Arc<Mutex<Sender<Packet>>>, server_instance: Arc<ServerInstance>) {
-        let mut interval = time::interval(std::time::Duration::from_millis(1000));
-        loop {
-            interval.tick().await;
-            let clients = CLIENTS.read().await;
-            if clients.len() > 0 {
-                let game_state_guard = server_instance.game_state.read().await;
-                let game_state_bytes = game_state_guard.wrap_game_state();
-                Logger::info(&format!("Sending game state of {} bytes", game_state_bytes.len()));
-                let packet = Packet::new(MessageType::GameState, &game_state_bytes);
-                let tx = tx.lock().await;
-                let _ = tx.send(packet);
             }
         }
     }
