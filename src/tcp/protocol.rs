@@ -1,4 +1,3 @@
-use std::fmt::Display;
 use super::client::{Client, TemporaryClient};
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{NetworkError, PlayerConnectionError};
@@ -6,6 +5,8 @@ use crate::{
     game::player::Player,
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
 };
+use std::collections::VecDeque;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -143,17 +144,18 @@ impl Protocol {
     /// Logs all outcomes
     pub async fn send_packet(
         &self,
-        write_half: Arc<RwLock<OwnedWriteHalf>>,
-        addr: SocketAddr,
+        client: Arc<Client>,
         packet: &Packet,
     ) -> Result<(), NetworkError> {
-        let mut tries = 1;
-        while tries <= 3 {
+        let mut tries = 0;
+        while tries < 3 {
+            let addr = client.addr.read().await;
             let packet_data = packet.wrap_packet();
-            let mut stream_guard = write_half.write().await;
+            let mut stream_guard = client.write_stream.write().await;
             if stream_guard.write_all(&packet_data).await.is_err() {
                 Logger::error(&format!(
-                    "[PROTOCOL] Failed to send packet to `{addr}`. Retrying... [{tries}/3]"
+                    "[PROTOCOL] Failed to send packet to `{addr}`. Retrying... [{}/3]",
+                    tries + 1
                 ));
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 tries += 1;
@@ -167,6 +169,8 @@ impl Protocol {
             ));
             return Ok(());
         }
+
+        self.disconnect(client).await;
         return Err(NetworkError::PackageWriteError("unknown error".to_string()));
     }
 
@@ -175,22 +179,16 @@ impl Protocol {
     /// Useful for simplifying repeated send-and-disconnect patterns.
     /// Prevents duplicated error handling logic throughout packet handling.
     async fn send_or_disconnect(&self, client: Arc<Client>, packet: &Packet) {
-        let addr = client.addr.read().await.clone();
-        if self
-            .send_packet(client.write_stream.clone(), addr, packet)
-            .await
-            .is_err()
-        {
-            self.disconnect(client).await;
+        let client_clone = Arc::clone(&client);
+        if self.send_packet(client, packet).await.is_err() {
+            self.disconnect(client_clone).await;
         }
     }
 
     async fn send_and_disconnect(&self, client: Arc<Client>, packet: &Packet) {
-        let addr = client.addr.read().await.clone();
-        let _ = self
-            .send_packet(client.write_stream.clone(), addr, packet)
-            .await;
-        self.disconnect(client).await;
+        let client_clone = Arc::clone(&client);
+        let _ = self.send_packet(client, packet).await;
+        self.disconnect(client_clone).await;
     }
 
     async fn handle_packet(&self, client: Arc<Client>, packet: &Packet) {
@@ -211,7 +209,7 @@ impl Protocol {
         temp_client: Arc<TemporaryClient>,
         packet: &Packet,
     ) -> Result<(), PlayerConnectionError> {
-        let player = Player::new(&packet.payload).await?;
+        let player = Player::new_connection(&packet.payload).await?;
         Logger::info(&format!(
             "[PROTOCOL] Client `{}` successfully authenticated as `{}`",
             &temp_client.addr, &player.username
@@ -245,31 +243,22 @@ impl Protocol {
             "[PROTOCOL] Reconnection request from `{}`",
             &temp_client.addr
         ));
-        let player = Player::new(&packet.payload).await?;
+        let player_id = Player::reconnection(&packet.payload).await?;
         Logger::info(&format!(
             "[PROTOCOL] Client `{}` has been authenticated as player `{}`.",
-            &temp_client.addr, &player.username
+            &temp_client.addr, &player_id
         ));
         let players_map = self.server.players.read().await;
-        return if let Some(client) = players_map.get(&player.id) {
+        return if let Some(client) = players_map.get(&player_id) {
             match Arc::try_unwrap(temp_client) {
                 Ok(temp) => {
                     Logger::info(&format!(
                         "[PROTOCOL] Attempting to reconnect player `{}`",
-                        &player.username
+                        &client.player.read().await.username
                     ));
 
-                    let client_clone = Arc::clone(client);
-                    let (read, write) = temp.stream.into_split();
-
-                    let mut write_stream = client_clone.write_stream.write().await;
-                    let mut read_stream = client.read_stream.write().await;
-                    let mut addr = client.addr.write().await;
-
-                    *write_stream = write;
-                    *read_stream = read;
-                    *addr = temp.addr;
-
+                    let client_clone = Arc::clone(&client);
+                    client_clone.reconnect(temp).await;
                     return Ok(());
                 }
                 Err(_) => Err(PlayerConnectionError::InternalError(
@@ -279,17 +268,36 @@ impl Protocol {
         } else {
             Logger::error(&format!(
                 "[PROTOCOL] Player `{}` not connected to this match",
-                &player.username
+                &player_id
             ));
             Err(PlayerConnectionError::InternalError(
                 "Player not found in this match".to_string(),
             ))
-        }
+        };
     }
 
     async fn handle_disconnect(&self, client: Arc<Client>) {
         let packet = Packet::new(MessageType::Disconnect, b"");
         self.send_and_disconnect(client, &packet).await;
+    }
+
+    pub async fn send_missed_packets(&self, client: Arc<Client>) {
+        let mut packets_lock = client.missed_packets.write().await;
+        loop {
+            if let Some(packet) = packets_lock.pop_front() {
+                let client_clone = Arc::clone(&client);
+                self.send_or_disconnect(client_clone, &packet).await;
+                tokio::time::interval(Duration::from_micros(30))
+                    .tick()
+                    .await;
+            } else {
+                break;
+            }
+        }
+        Logger::debug(&format!(
+            "[PROTOCOL] Sent latest missed packets to {}",
+            &client.addr.read().await
+        ));
     }
 
     async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {

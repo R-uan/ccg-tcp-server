@@ -1,10 +1,6 @@
 use super::protocol::{MessageType, Packet, Protocol};
 use crate::{game::player::Player, utils::logger::Logger};
-use std::{
-    collections::VecDeque,
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 use tokio::{
     io::AsyncReadExt,
     net::{
@@ -102,20 +98,41 @@ impl Client {
                 let addr = self.addr.read().await;
                 let mut missed_packets = self.missed_packets.write().await;
                 missed_packets.push_back(game_state);
+
+                if missed_packets.len() > 30 {
+                    missed_packets.pop_front();
+                }
+
                 Logger::warn(&format!(
                     "[CLIENT] `{addr}` has {} game state packets in queue",
                     &missed_packets.len()
                 ));
+
                 continue;
             }
-
-            let write_stream_clone = Arc::clone(&self.write_stream);
-            let addr = *Arc::clone(&self.addr).read().await;
-            let _ = self
-                .protocol
-                .send_packet(write_stream_clone, addr, &game_state)
-                .await;
+            
+            if self.missed_packets.read().await.len() > 0 {
+                let client_clone = Arc::clone(&self);
+                self.protocol.send_missed_packets(client_clone).await;
+            }
+            
+            let client_clone = Arc::clone(&self);
+            let _ = self.protocol.send_packet(client_clone, &game_state).await;
         }
+    }
+
+    pub async fn reconnect(self: Arc<Self>, temporary_client: TemporaryClient) {
+        let (read, write) = temporary_client.stream.into_split();
+
+        let mut write_stream = self.write_stream.write().await;
+        let mut read_stream = self.read_stream.write().await;
+        let mut addr = self.addr.write().await;
+        let mut connected = self.connected.write().await;
+
+        *write_stream = write;
+        *read_stream = read;
+        *addr = temporary_client.addr;
+        *connected = true;
     }
 }
 
@@ -163,7 +180,9 @@ impl TemporaryClient {
                         Logger::warn(&format!(
                             "[CLIENT] Could not authenticate `{addr}` ({error})"
                         ));
-                    };
+                    } else {
+                        Logger::info(&format!("[CLIENT] `{addr}` has been reconnected as `todo`"));
+                    }
                 }
             }
             Err(error) => {

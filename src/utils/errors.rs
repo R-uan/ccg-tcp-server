@@ -3,6 +3,9 @@ pub enum PlayerConnectionError {
     #[error("Invalid player payload: {0}")]
     InvalidPlayerPayload(String),
 
+    #[error("Given player ID does not match with profile")]
+    PlayerDoesNotMatch,
+
     #[error("Player token was not authorized")]
     UnauthorizedPlayerError,
 

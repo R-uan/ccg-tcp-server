@@ -1,10 +1,11 @@
 use crate::{
-    models::{client_requests::ConnRequest, deck::Deck, http_response::PartialPlayerProfile},
+    models::{client_requests::ConnectionRequest, deck::Deck, http_response::PartialPlayerProfile},
     utils::{errors::PlayerConnectionError, logger::Logger},
     SETTINGS,
 };
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
+use crate::models::client_requests::ReconnectionRequest;
 
 #[derive(Serialize, Deserialize)]
 pub struct Player {
@@ -30,8 +31,8 @@ impl Player {
     /// Returns:
     /// - `Ok(Player)` if parsing succeeds
     /// - `Err(InvalidPlayerPayload)` if UTF-8 is invalid or format is incorrect
-    pub async fn new(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
-        return match serde_cbor::from_slice::<ConnRequest>(payload) {
+    pub async fn new_connection(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
+        return match serde_cbor::from_slice::<ConnectionRequest>(payload) {
             Err(error) => {
                 let reason = error.to_string();
                 Logger::error(&format!("[PLAYER] {}", &reason));
@@ -66,6 +67,24 @@ impl Player {
         };
     }
 
+    pub async fn reconnection(payload: &[u8]) -> Result<String, PlayerConnectionError> {
+        return match serde_cbor::from_slice::<ReconnectionRequest>(payload) {
+            Ok(request) => {
+                let player_profile = Player::get_player_profile(&request.auth_token).await?;
+                if player_profile.id != request.player_id {
+                    return Err(PlayerConnectionError::PlayerDoesNotMatch);
+                }
+                return Ok(player_profile.id);
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                Logger::error(&format!("[PLAYER] {}", &reason));
+                Err(PlayerConnectionError::InvalidPlayerPayload(format!(
+                    "{reason} (ConnRequest CBOR Deserialisation)"
+                )))
+            }        }
+    }
+    
     async fn get_player_deck(deck_id: &str, token: &str) -> Result<Deck, PlayerConnectionError> {
         let settings = SETTINGS.get().expect("Settings not initialized");
         let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
