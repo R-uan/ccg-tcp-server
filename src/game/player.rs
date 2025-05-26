@@ -1,3 +1,6 @@
+use crate::models::client_requests::ReconnectionRequest;
+use crate::models::http_response::AuthenticatedPlayer;
+use crate::utils::errors::PlayerConnectionError::UnexpectedPlayerError;
 use crate::{
     models::{client_requests::ConnectionRequest, deck::Deck, http_response::PartialPlayerProfile},
     utils::{errors::PlayerConnectionError, logger::Logger},
@@ -5,7 +8,6 @@ use crate::{
 };
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
-use crate::models::client_requests::ReconnectionRequest;
 
 #[derive(Serialize, Deserialize)]
 pub struct Player {
@@ -67,14 +69,16 @@ impl Player {
         };
     }
 
-    pub async fn reconnection(payload: &[u8]) -> Result<String, PlayerConnectionError> {
+    pub async fn reconnection(
+        payload: &[u8],
+    ) -> Result<AuthenticatedPlayer, PlayerConnectionError> {
         return match serde_cbor::from_slice::<ReconnectionRequest>(payload) {
             Ok(request) => {
-                let player_profile = Player::get_player_profile(&request.auth_token).await?;
-                if player_profile.id != request.player_id {
+                let player_profile = Player::verify_authentication(&request.auth_token).await?;
+                if player_profile.player_id != request.player_id {
                     return Err(PlayerConnectionError::PlayerDoesNotMatch);
                 }
-                return Ok(player_profile.id);
+                return Ok(player_profile);
             }
             Err(error) => {
                 let reason = error.to_string();
@@ -82,9 +86,50 @@ impl Player {
                 Err(PlayerConnectionError::InvalidPlayerPayload(format!(
                     "{reason} (ConnRequest CBOR Deserialisation)"
                 )))
-            }        }
+            }
+        };
     }
-    
+
+    async fn verify_authentication(
+        token: &str,
+    ) -> Result<AuthenticatedPlayer, PlayerConnectionError> {
+        let settings = SETTINGS.get().expect("Settings not initialized");
+        let api_url = format!("{}/api/auth/verify", settings.auth_server);
+        let reqwest_client = reqwest::Client::new();
+        return match reqwest_client
+            .get(api_url)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await
+        {
+            Ok(response) => match response.status() {
+                StatusCode::OK => {
+                    let result = response.json::<AuthenticatedPlayer>().await.map_err(|_| {
+                        PlayerConnectionError::InvalidResponseBody(
+                            "AuthenticatedPlayer response was unexpected".to_string(),
+                        )
+                    })?;
+
+                    if result.is_banned == true {
+                        return Err(PlayerConnectionError::PlayerIsBanned);
+                    }
+
+                    Ok(result)
+                }
+                StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedPlayerError),
+                _ => Err(PlayerConnectionError::UnexpectedPlayerError(format!(
+                    "Unexpected authentication response status: {}",
+                    &response.status()
+                ))),
+            },
+            Err(error) => {
+                return Err(PlayerConnectionError::UnexpectedPlayerError(
+                    error.to_string(),
+                ))
+            }
+        };
+    }
+
     async fn get_player_deck(deck_id: &str, token: &str) -> Result<Deck, PlayerConnectionError> {
         let settings = SETTINGS.get().expect("Settings not initialized");
         let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
@@ -124,7 +169,7 @@ impl Player {
         token: &str,
     ) -> Result<PartialPlayerProfile, PlayerConnectionError> {
         let settings = SETTINGS.get().expect("Settings not initialized");
-        let api_url = format!("{}/api/player/profile", settings.auth_server);
+        let api_url = format!("{}/api/player/account", settings.auth_server);
         let reqwest_client = reqwest::Client::new();
         return match reqwest_client
             .get(api_url)
@@ -151,7 +196,7 @@ impl Player {
                 Logger::error(&format!("[PLAYER] Profile fetch error ({})", status));
                 return match status {
                     StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedPlayerError),
-                    _ => Err(PlayerConnectionError::UnexpectedPlayerError),
+                    _ => Err(PlayerConnectionError::UnexpectedPlayerError(e.to_string())),
                 };
             }
         };

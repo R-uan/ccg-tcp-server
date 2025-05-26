@@ -243,13 +243,13 @@ impl Protocol {
             "[PROTOCOL] Reconnection request from `{}`",
             &temp_client.addr
         ));
-        let player_id = Player::reconnection(&packet.payload).await?;
+        let authenticated_player = Player::reconnection(&packet.payload).await?;
         Logger::info(&format!(
             "[PROTOCOL] Client `{}` has been authenticated as player `{}`.",
-            &temp_client.addr, &player_id
+            &temp_client.addr, &authenticated_player.username
         ));
         let players_map = self.server.players.read().await;
-        return if let Some(client) = players_map.get(&player_id) {
+        return if let Some(client) = players_map.get(&authenticated_player.player_id) {
             match Arc::try_unwrap(temp_client) {
                 Ok(temp) => {
                     Logger::info(&format!(
@@ -268,7 +268,7 @@ impl Protocol {
         } else {
             Logger::error(&format!(
                 "[PROTOCOL] Player `{}` not connected to this match",
-                &player_id
+                &temp_client.addr
             ));
             Err(PlayerConnectionError::InternalError(
                 "Player not found in this match".to_string(),

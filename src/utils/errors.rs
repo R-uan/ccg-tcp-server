@@ -1,5 +1,11 @@
 #[derive(Debug, thiserror::Error)]
 pub enum PlayerConnectionError {
+    #[error("{0}")]
+    InvalidResponseBody(String),
+    
+    #[error("Player is banned")]
+    PlayerIsBanned,
+    
     #[error("Invalid player payload: {0}")]
     InvalidPlayerPayload(String),
 
@@ -9,8 +15,8 @@ pub enum PlayerConnectionError {
     #[error("Player token was not authorized")]
     UnauthorizedPlayerError,
 
-    #[error("Unexpected error")]
-    UnexpectedPlayerError,
+    #[error("Unexpected error: {0}")]
+    UnexpectedPlayerError(String),
 
     #[error("Deck was not found")]
     DeckNotFound,
