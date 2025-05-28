@@ -57,7 +57,7 @@ impl LuaContext {
         };
     }
 
-    pub fn to_table(&self, lua: &mlua::Lua) -> Result<mlua::Table, mlua::Error> {
+    pub fn to_table(&self, lua: Arc<mlua::Lua>) -> Result<mlua::Table, mlua::Error> {
         let context_value = lua.to_value(&self)?;
         return match context_value.as_table() {
             Some(table) => Ok(table.to_owned()),

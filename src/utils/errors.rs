@@ -48,3 +48,15 @@ pub enum NetworkError {
     #[error("Could not send package: {0}")]
     PackageWriteError(String),
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum GameLogicError {
+    #[error("Card played is not in hand")]
+    CardPlayedIsNotInHand,
+    
+    #[error("Function `{0}` was not found for card `{1}`")]
+    FunctionNotFound(String, String),
+    
+    #[error("Invalid GameAction return")]
+    InvalidGameActions
+}

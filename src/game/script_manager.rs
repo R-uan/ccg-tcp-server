@@ -69,7 +69,7 @@ impl ScriptManager {
         Ok(())
     }
 
-    pub async fn set_globals(&mut self) {
+    pub(crate) async fn set_globals(&mut self) {
         let globals = self.lua.globals();
         if let Ok(files) = fs::read_dir("./scripts") {
             for entry in files {
@@ -121,8 +121,14 @@ impl ScriptManager {
         }
     }
 
-    pub async fn get_core_func(&self, func: &str) -> Option<Function> {
-        let core_guard = self.core.lock().await;
-        return core_guard.get(func).cloned();
+    pub async fn get_function(&self, action: &str) -> Option<Function> {
+        let action_parts: Vec<&str> = action.splitn(2, ":").collect();
+        return match action_parts.as_slice() {
+            ["cards", key] => self.cards.lock().await.get(*key).cloned(),
+            ["core", key] => self.core.lock().await.get(*key).cloned(),
+            ["effects", key] => self.effects.lock().await.get(*key).cloned(),
+            ["triggers", key] => self.triggers.lock().await.get(*key).cloned(),
+            _ => None
+        };
     }
 }

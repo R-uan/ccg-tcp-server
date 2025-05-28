@@ -1,6 +1,6 @@
 use super::client::{Client, TemporaryClient};
 use crate::tcp::server::ServerInstance;
-use crate::utils::errors::{NetworkError, PlayerConnectionError};
+use crate::utils::errors::{GameLogicError, NetworkError, PlayerConnectionError};
 use crate::{
     game::player::Player,
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
@@ -10,10 +10,13 @@ use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use mlua::LuaSerdeExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::RwLock;
 use tokio::time;
+use crate::game::lua_context::LuaContext;
+use crate::models::game_action::GameAction;
 
 /// Represents the type of message in a protocol packet.
 ///
@@ -174,6 +177,18 @@ impl Protocol {
         return Err(NetworkError::PackageWriteError("unknown error".to_string()));
     }
 
+    /// Gracefully disconnects the client from the server.
+    ///
+    /// - Logs the disconnection.
+    /// - Removes the client from the global `CLIENTS` map.
+    /// - Sets its `connected` flag to `false`.
+    async fn disconnect(&self, client: Arc<Client>) {
+        let addr = client.addr.read().await;
+        Logger::info(&format!("[PROTOCOL] Client `{addr}` disconnected"));
+        let mut connected_guard = client.connected.write().await;
+        *connected_guard = false;
+    }
+
     /// Sends a packet to the client, disconnecting if the send fails.
     ///
     /// Useful for simplifying repeated send-and-disconnect patterns.
@@ -195,7 +210,7 @@ impl Protocol {
         let message_type = &packet.header.header_type;
         match message_type {
             MessageType::Disconnect => self.handle_disconnect(client).await,
-            MessageType::PlayCard => self.handle_play_card(client, packet).await,
+            MessageType::PlayCard => self.handle_play_card(client, packet).await.unwrap_or_default(),
             _ => {
                 Logger::warn("[PROTOCOL] Invalid header");
                 let packet = Packet::new(MessageType::InvalidHeader, b"");
@@ -281,6 +296,54 @@ impl Protocol {
         self.send_and_disconnect(client, &packet).await;
     }
 
+    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) -> Result<(), GameLogicError> {
+        let card_id = String::from_utf8_lossy(&packet.payload);
+        let game_state = self.server.game_state.read().await;
+        if let Some(player_view) = game_state.players.get(&game_state.curr_turn) {
+            let player_clone = Arc::clone(player_view);
+            let player_guard = player_clone.read().await;
+            let hand = player_guard.current_hand.iter().flatten().find(|c| c.id == card_id);
+            if let Some(card_view) = hand {
+                let player = Arc::clone(&client.player);
+                if player.read().await.current_deck.cards.iter().find(|c| c.id == card_view.id).is_none() {
+                    return Err(GameLogicError::CardPlayedIsNotInHand);
+                }
+                
+                let game_cards_lock = game_state.game_cards.read().await;
+                if let Some(full_card) = game_cards_lock.iter().find(|c| c.id == card_view.id) {
+                    for action in &full_card.on_play {
+                        let lua_context = LuaContext::new(
+                            Arc::clone(&self.server.game_state), 
+                            card_view, 
+                            None, 
+                            "on_play".to_string(), 
+                            action.to_string()
+                        ).await;
+                        
+                        let scripts_clone = Arc::clone(&self.server.scripts);
+                        let script_manager = scripts_clone.read().await;
+                        let lua = Arc::clone(&script_manager.lua);
+                        let lua_table = lua_context.to_table(lua);
+                        if let Some(script_function) = script_manager.get_function(action).await {
+                            let return_value: mlua::Value = script_function.call(lua_table)
+                                .map_err(|_| {
+                                    GameLogicError::FunctionNotFound(action.clone(), card_view.id.clone())
+                                })?;
+                            let results: Vec<GameAction> = script_manager.lua.from_value(return_value).map_err(|_| {
+                                GameLogicError::InvalidGameActions
+                            })?; 
+                        }
+                    }
+                } else {
+                    // Should fetch it on the spot as the card is already confirmed to be in the deck
+                    todo!();
+                }                
+            }
+        }
+        
+        Ok(())
+    }
+
     pub async fn send_missed_packets(&self, client: Arc<Client>) {
         let mut packets_lock = client.missed_packets.write().await;
         loop {
@@ -298,22 +361,6 @@ impl Protocol {
             "[PROTOCOL] Sent latest missed packets to {}",
             &client.addr.read().await
         ));
-    }
-
-    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {
-        todo!()
-    }
-
-    /// Gracefully disconnects the client from the server.
-    ///
-    /// - Logs the disconnection.
-    /// - Removes the client from the global `CLIENTS` map.
-    /// - Sets its `connected` flag to `false`.
-    async fn disconnect(&self, client: Arc<Client>) {
-        let addr = client.addr.read().await;
-        Logger::info(&format!("[PROTOCOL] Client `{addr}` disconnected"));
-        let mut connected_guard = client.connected.write().await;
-        *connected_guard = false;
     }
 
     pub async fn cycle_game_state(&self) {
