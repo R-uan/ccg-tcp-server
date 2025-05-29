@@ -3,7 +3,3 @@ function Hello(context)
     print(womp);
 end
 
-function damage_player(ctx)
-    print("")
-end
-

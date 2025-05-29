@@ -7,10 +7,12 @@ use std::{
     sync::Arc,
 };
 
-use mlua::{Function, Lua};
-use tokio::sync::Mutex;
-
+use crate::game::lua_context::LuaContext;
+use crate::models::game_action::GameAction;
+use crate::utils::errors::GameLogicError;
 use crate::utils::logger::Logger;
+use mlua::{Function, Lua, LuaSerdeExt, Value};
+use tokio::sync::Mutex;
 
 pub struct ScriptManager {
     pub lua: Arc<Lua>,
@@ -128,7 +130,49 @@ impl ScriptManager {
             ["core", key] => self.core.lock().await.get(*key).cloned(),
             ["effects", key] => self.effects.lock().await.get(*key).cloned(),
             ["triggers", key] => self.triggers.lock().await.get(*key).cloned(),
-            _ => None
+            _ => None,
         };
+    }
+
+    pub async fn call_function(
+        &self,
+        action: &str,
+        ctx: LuaContext,
+    ) -> Result<Vec<GameAction>, GameLogicError> {
+        let lua_table = ctx.to_table(self.lua.clone());
+        if let Some(function) = self.get_function(action).await {
+            let lua_value: Value = function.call(lua_table).map_err(|_| {
+                GameLogicError::FunctionNotCallable(action.to_string())
+            })?;
+            let game_actions: Vec<GameAction> = self.lua.from_value(lua_value).map_err(|_| {
+                GameLogicError::InvalidGameActions
+            })?;
+            return Ok(game_actions);
+        }
+
+        return Err(GameLogicError::FunctionNotFound(action.to_string(), ctx.actor_id.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_get_function() {
+        let mut script_manager = ScriptManager::new_vm();
+        let load_scripts = script_manager.load_scripts();
+        assert!(load_scripts.is_ok());
+        script_manager.set_globals().await;
+        let function = script_manager.get_function("core:test").await;
+        assert!(function.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_call_function() {
+        let mut sm = ScriptManager::new_vm();
+        let load_scripts = sm.load_scripts();
+        assert!(load_scripts.is_ok());
+        sm.set_globals().await;
     }
 }

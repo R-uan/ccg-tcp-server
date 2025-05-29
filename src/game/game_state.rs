@@ -16,16 +16,14 @@ pub struct GameState {
     pub blue_player: String,
     pub ongoing: Arc<RwLock<bool>>,
     pub game_cards: Arc<RwLock<Vec<Card>>>,
-    pub lua_scripts: Arc<RwLock<ScriptManager>>,
     pub players: HashMap<String, Arc<RwLock<PrivatePlayerView>>>,
 }
 
 impl GameState {
-    pub fn new_game(scripts: Arc<RwLock<ScriptManager>>) -> Self {
+    pub fn new_game() -> Self {
         Self {
             rounds: 0,
             red_first: true,
-            lua_scripts: scripts,
             players: HashMap::new(),
             red_player: String::new(),
             blue_player: String::new(),

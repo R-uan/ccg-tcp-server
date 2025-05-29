@@ -1,22 +1,22 @@
 use super::client::{Client, TemporaryClient};
+use crate::game::lua_context::LuaContext;
+use crate::models::game_action::GameAction;
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{GameLogicError, NetworkError, PlayerConnectionError};
 use crate::{
     game::player::Player,
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
 };
+use mlua::LuaSerdeExt;
 use std::collections::VecDeque;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use mlua::LuaSerdeExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::RwLock;
 use tokio::time;
-use crate::game::lua_context::LuaContext;
-use crate::models::game_action::GameAction;
 
 /// Represents the type of message in a protocol packet.
 ///
@@ -210,7 +210,10 @@ impl Protocol {
         let message_type = &packet.header.header_type;
         match message_type {
             MessageType::Disconnect => self.handle_disconnect(client).await,
-            MessageType::PlayCard => self.handle_play_card(client, packet).await.unwrap_or_default(),
+            MessageType::PlayCard => self
+                .handle_play_card(client, packet)
+                .await
+                .unwrap_or_default(),
             _ => {
                 Logger::warn("[PROTOCOL] Invalid header");
                 let packet = Packet::new(MessageType::InvalidHeader, b"");
@@ -296,51 +299,60 @@ impl Protocol {
         self.send_and_disconnect(client, &packet).await;
     }
 
-    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) -> Result<(), GameLogicError> {
+    async fn handle_play_card(
+        &self,
+        client: Arc<Client>,
+        packet: &Packet,
+    ) -> Result<(), GameLogicError> {
         let card_id = String::from_utf8_lossy(&packet.payload);
         let game_state = self.server.game_state.read().await;
         if let Some(player_view) = game_state.players.get(&game_state.curr_turn) {
             let player_clone = Arc::clone(player_view);
             let player_guard = player_clone.read().await;
-            let hand = player_guard.current_hand.iter().flatten().find(|c| c.id == card_id);
+            let hand = player_guard
+                .current_hand
+                .iter()
+                .flatten()
+                .find(|c| c.id == card_id);
             if let Some(card_view) = hand {
                 let player = Arc::clone(&client.player);
-                if player.read().await.current_deck.cards.iter().find(|c| c.id == card_view.id).is_none() {
+                if player
+                    .read()
+                    .await
+                    .current_deck
+                    .cards
+                    .iter()
+                    .find(|c| c.id == card_view.id)
+                    .is_none()
+                {
                     return Err(GameLogicError::CardPlayedIsNotInHand);
                 }
-                
+
                 let game_cards_lock = game_state.game_cards.read().await;
                 if let Some(full_card) = game_cards_lock.iter().find(|c| c.id == card_view.id) {
                     for action in &full_card.on_play {
                         let lua_context = LuaContext::new(
-                            Arc::clone(&self.server.game_state), 
-                            card_view, 
-                            None, 
-                            "on_play".to_string(), 
-                            action.to_string()
-                        ).await;
-                        
-                        let scripts_clone = Arc::clone(&self.server.scripts);
-                        let script_manager = scripts_clone.read().await;
-                        let lua = Arc::clone(&script_manager.lua);
-                        let lua_table = lua_context.to_table(lua);
-                        if let Some(script_function) = script_manager.get_function(action).await {
-                            let return_value: mlua::Value = script_function.call(lua_table)
-                                .map_err(|_| {
-                                    GameLogicError::FunctionNotFound(action.clone(), card_view.id.clone())
-                                })?;
-                            let results: Vec<GameAction> = script_manager.lua.from_value(return_value).map_err(|_| {
-                                GameLogicError::InvalidGameActions
-                            })?; 
-                        }
+                            Arc::clone(&self.server.game_state),
+                            card_view,
+                            None,
+                            "on_play".to_string(),
+                            action.to_string(),
+                        )
+                        .await;
+
+                        let script_manager_clone = Arc::clone(&self.server.scripts);
+                        let script_manager_guard = script_manager_clone.read().await;
+                        let game_actions = script_manager_guard
+                            .call_function(action, lua_context)
+                            .await;
                     }
                 } else {
                     // Should fetch it on the spot as the card is already confirmed to be in the deck
                     todo!();
-                }                
+                }
             }
         }
-        
+
         Ok(())
     }
 

@@ -56,6 +56,9 @@ pub enum GameLogicError {
     
     #[error("Function `{0}` was not found for card `{1}`")]
     FunctionNotFound(String, String),
+
+    #[error("Unable to call Lua function `{0}`")]
+    FunctionNotCallable(String),
     
     #[error("Invalid GameAction return")]
     InvalidGameActions

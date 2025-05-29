@@ -46,7 +46,7 @@ impl ServerInstance {
         let scripts_clone = Arc::clone(&scripts);
         // Lua scripting END
 
-        let game_state = GameState::new_game(scripts_clone);
+        let game_state = GameState::new_game();
         let (tx, _) = broadcast::channel::<Packet>(10);
         return match TcpListener::bind((HOST, port)).await {
             Ok(listener) => {
