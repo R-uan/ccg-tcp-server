@@ -13,12 +13,12 @@ pub struct LuaContext {
     pub event: String,
     pub player_turn: String,
     pub action_name: String,
-
+    
     pub actor_id: String,
     pub actor_view: CardView,
-    pub game_state: PrivateGameStateView,
     pub target_id: Option<String>,
     pub target_view: Option<CardView>,
+    pub game_state: PrivateGameStateView,
     // Blue or Red
 }
 

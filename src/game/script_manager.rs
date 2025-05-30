@@ -134,30 +134,53 @@ impl ScriptManager {
         };
     }
 
-    pub async fn call_function(
+    pub async fn call_function(&self, action: &str) -> Result<Vec<GameAction>, GameLogicError> {
+        if let Some(function) = self.get_function(action).await {
+            let lua_value: Value = function
+                .call("")
+                .map_err(|_| GameLogicError::FunctionNotCallable(action.to_string()))?;
+            let game_actions: Vec<GameAction> = self
+                .lua
+                .from_value(lua_value)
+                .map_err(|_| GameLogicError::InvalidGameActions)?;
+            return Ok(game_actions);
+        }
+
+        return Err(GameLogicError::FunctionNotFound(
+            action.to_string(),
+            "None".to_string(),
+        ));
+    }
+
+    pub async fn call_function_ctx(
         &self,
         action: &str,
         ctx: LuaContext,
     ) -> Result<Vec<GameAction>, GameLogicError> {
         let lua_table = ctx.to_table(self.lua.clone());
         if let Some(function) = self.get_function(action).await {
-            let lua_value: Value = function.call(lua_table).map_err(|_| {
-                GameLogicError::FunctionNotCallable(action.to_string())
-            })?;
-            let game_actions: Vec<GameAction> = self.lua.from_value(lua_value).map_err(|_| {
-                GameLogicError::InvalidGameActions
-            })?;
+            let lua_value: Value = function
+                .call(lua_table)
+                .map_err(|_| GameLogicError::FunctionNotCallable(action.to_string()))?;
+            let game_actions: Vec<GameAction> = self
+                .lua
+                .from_value(lua_value)
+                .map_err(|_| GameLogicError::InvalidGameActions)?;
             return Ok(game_actions);
         }
 
-        return Err(GameLogicError::FunctionNotFound(action.to_string(), ctx.actor_id.to_string()))
+        return Err(GameLogicError::FunctionNotFound(
+            action.to_string(),
+            ctx.actor_id.to_string(),
+        ));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use std::fmt::Debug;
+
     #[tokio::test]
     async fn test_get_function() {
         let mut script_manager = ScriptManager::new_vm();
@@ -174,5 +197,10 @@ mod tests {
         let load_scripts = sm.load_scripts();
         assert!(load_scripts.is_ok());
         sm.set_globals().await;
+        let function = sm.call_function("core:test").await;
+        assert!(function.is_ok());
+        if let Ok(actions) = function {
+            assert_eq!(2, actions.len());
+        }
     }
 }

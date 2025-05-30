@@ -15,7 +15,7 @@ pub struct GameState {
     pub red_player: String,
     pub blue_player: String,
     pub ongoing: Arc<RwLock<bool>>,
-    pub game_cards: Arc<RwLock<Vec<Card>>>,
+    pub game_cards: Arc<RwLock<HashMap<String, Card>>>,
     pub players: HashMap<String, Arc<RwLock<PrivatePlayerView>>>,
 }
 
@@ -29,7 +29,7 @@ impl GameState {
             blue_player: String::new(),
             curr_turn: String::from("Red"),
             ongoing: Arc::new(RwLock::new(true)),
-            game_cards: Arc::new(RwLock::new(Vec::new())),
+            game_cards: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -53,4 +53,9 @@ impl GameState {
     }
 
     pub async fn fetch_cards_details(&mut self, cards: Vec<&str>) {}
+
+    pub async fn add_card(&self, card: Card) {
+        let mut card_vec = self.game_cards.write().await;
+        card_vec.insert(card.id.to_string(), card);
+    }
 }

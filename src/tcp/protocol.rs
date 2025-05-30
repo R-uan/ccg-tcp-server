@@ -1,5 +1,7 @@
 use super::client::{Client, TemporaryClient};
 use crate::game::lua_context::LuaContext;
+use crate::models::client_requests::PlayCardRequest;
+use crate::models::deck::Card;
 use crate::models::game_action::GameAction;
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{GameLogicError, NetworkError, PlayerConnectionError};
@@ -52,6 +54,7 @@ pub enum MessageType {
     InvalidPlayerData = 0xFC,
     InvalidChecksum = 0xFD,
     FailedToConnectPlayer = 0xF0,
+    InvalidPacketPayload = 0xF1,
     ERROR = 0xFE,
 }
 
@@ -71,6 +74,7 @@ impl Display for MessageType {
             MessageType::InvalidPlayerData => String::from("INVALID_PLAYER_DATA"),
             MessageType::InvalidChecksum => String::from("INVALID_CHECKSUM"),
             MessageType::FailedToConnectPlayer => String::from("FAILED_TO_CONNECT_PLAYER"),
+            MessageType::InvalidPacketPayload => String::from("INVALID_PACKET_PAYLOAD"),
             MessageType::ERROR => String::from("ERROR"),
 
             MessageType::GameState => String::from("GAME_STATE"),
@@ -99,6 +103,12 @@ impl TryFrom<u8> for MessageType {
             0x11 => Ok(MessageType::PlayCard),
             0x12 => Ok(MessageType::AttackPlayer),
 
+            0xFA => Ok(MessageType::InvalidHeader),
+            0xFB => Ok(MessageType::AlreadyConnected),
+            0xFC => Ok(MessageType::InvalidPlayerData),
+            0xFD => Ok(MessageType::InvalidChecksum),
+            0xF0 => Ok(MessageType::FailedToConnectPlayer),
+            0xF1 => Ok(MessageType::InvalidPacketPayload),
             0xFE => Ok(MessageType::ERROR),
             _ => Err(()),
         }
@@ -210,10 +220,17 @@ impl Protocol {
         let message_type = &packet.header.header_type;
         match message_type {
             MessageType::Disconnect => self.handle_disconnect(client).await,
-            MessageType::PlayCard => self
-                .handle_play_card(client, packet)
-                .await
-                .unwrap_or_default(),
+            MessageType::PlayCard => {
+                if let Ok(request) = serde_cbor::from_slice::<PlayCardRequest>(&packet.payload) {
+                    let play_card = self.handle_play_card(client, &request).await;
+                } else {
+                    let invalid_request = Packet::new(
+                        MessageType::InvalidPacketPayload,
+                        b"Could not parse play card request.",
+                    );
+                    let _ = self.send_packet(client.clone(), &invalid_request).await;
+                }
+            }
             _ => {
                 Logger::warn("[PROTOCOL] Invalid header");
                 let packet = Packet::new(MessageType::InvalidHeader, b"");
@@ -302,55 +319,91 @@ impl Protocol {
     async fn handle_play_card(
         &self,
         client: Arc<Client>,
-        packet: &Packet,
+        request: &PlayCardRequest,
     ) -> Result<(), GameLogicError> {
-        let card_id = String::from_utf8_lossy(&packet.payload);
+        // Clones game state so it can check on stuff
         let game_state = self.server.game_state.read().await;
-        if let Some(player_view) = game_state.players.get(&game_state.curr_turn) {
-            let player_clone = Arc::clone(player_view);
-            let player_guard = player_clone.read().await;
-            let hand = player_guard
-                .current_hand
-                .iter()
-                .flatten()
-                .find(|c| c.id == card_id);
-            if let Some(card_view) = hand {
-                let player = Arc::clone(&client.player);
-                if player
-                    .read()
+        // Gets the player PrivatePlayerView from the player hashmap or return GameLogicError::PlayerNotFound
+        // as the operation can not continue without the player.
+        // PrivatePlayerView only contains data related to the game.
+        let player_view = game_state.players.get(&request.player_id).ok_or_else(|| {
+            Logger::error(&format!("Player `{}` was not found", &request.player_id));
+            return GameLogicError::PlayerNotFound;
+        })?;
+
+        let private_player_view_clone = Arc::clone(player_view);
+        let private_player_view_guard = private_player_view_clone.read().await;
+
+        // Clone player background data, in this case we are interested in the player's full deck
+        // to check if the card player is available.
+        let player_clone = Arc::clone(&client.player);
+        let player_guard = player_clone.read().await;
+
+        // Check if the client's player matches with the PrivatePlayerView from given ID.
+        if &player_guard.id != &private_player_view_guard.id {
+            Logger::warn(&format!(
+                "Client's player ID ({}) does not match request's ({})",
+                &player_guard.id, &request.player_id
+            ));
+            return Err(GameLogicError::PlayerIdDoesNotMatch);
+        }
+
+        // Check if the turn is open for the current player actor
+        if &private_player_view_guard.id != &request.player_id {
+            Logger::warn(&format!(
+                "It's not player's turn: {}",
+                &player_guard.username
+            ));
+            return Err(GameLogicError::NotPlayerTurn);
+        }
+
+        // Verifies if the card played is actually in the player's hand. This does not account for
+        // out of hand plays from special interactions as they do not exist yet.
+        let player_hand = private_player_view_guard.current_hand.iter();
+        let card_view = player_hand
+            .flatten()
+            .find(|c| c.id == request.card_id)
+            .ok_or_else(|| {
+                Logger::warn(&format!(
+                    "Card player is not in player's ({}) hand",
+                    &player_guard.username
+                ));
+                return GameLogicError::CardPlayedIsNotInHand;
+            })?;
+
+        // Get the full data of the cards from the game_cards property in game_state
+        // If the card is initially not found in the game_cards, it should request it on the spot
+        // as the card was previously confirmed to be on player's deck.
+        let game_cards_lock = game_state.game_cards.read().await;
+        let full_card = match game_cards_lock.get(&card_view.id) {
+            Some(card) => card,
+            None => {
+                let card = Card::request_card(&card_view.id)
                     .await
-                    .current_deck
-                    .cards
-                    .iter()
-                    .find(|c| c.id == card_view.id)
-                    .is_none()
-                {
-                    return Err(GameLogicError::CardPlayedIsNotInHand);
-                }
-
-                let game_cards_lock = game_state.game_cards.read().await;
-                if let Some(full_card) = game_cards_lock.iter().find(|c| c.id == card_view.id) {
-                    for action in &full_card.on_play {
-                        let lua_context = LuaContext::new(
-                            Arc::clone(&self.server.game_state),
-                            card_view,
-                            None,
-                            "on_play".to_string(),
-                            action.to_string(),
-                        )
-                        .await;
-
-                        let script_manager_clone = Arc::clone(&self.server.scripts);
-                        let script_manager_guard = script_manager_clone.read().await;
-                        let game_actions = script_manager_guard
-                            .call_function(action, lua_context)
-                            .await;
-                    }
-                } else {
-                    // Should fetch it on the spot as the card is already confirmed to be in the deck
-                    todo!();
-                }
+                    .map_err(|_| GameLogicError::UnableToGetCardDetails)?;
+                game_state.add_card(card).await;
+                game_cards_lock
+                    .get(&card_view.id).ok_or_else(|| {
+                    return GameLogicError::UnableToGetCardDetails;
+                })?
             }
+        };
+
+        for action in &full_card.on_play {
+            let lua_context = LuaContext::new(
+                Arc::clone(&self.server.game_state),
+                card_view,
+                None,
+                "on_play".to_string(),
+                action.to_string(),
+            )
+            .await;
+
+            let script_manager_clone = Arc::clone(&self.server.scripts);
+            let script_manager_guard = script_manager_clone.read().await;
+            let game_actions = script_manager_guard
+                .call_function_ctx(action, lua_context)
+                .await;
         }
 
         Ok(())

@@ -12,3 +12,11 @@ pub struct ReconnectionRequest {
     pub player_id: String,
     pub auth_token: String,
 }
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct PlayCardRequest {
+    pub player_id: String,
+    pub card_id: String,
+    pub target_id: Option<String>,
+    pub target_position: Option<String>,
+}

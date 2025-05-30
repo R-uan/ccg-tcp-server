@@ -2,10 +2,10 @@
 pub enum PlayerConnectionError {
     #[error("{0}")]
     InvalidResponseBody(String),
-    
+
     #[error("Player is banned")]
     PlayerIsBanned,
-    
+
     #[error("Invalid player payload: {0}")]
     InvalidPlayerPayload(String),
 
@@ -29,9 +29,9 @@ pub enum PlayerConnectionError {
 
     #[error("Player does not have permission to access deck")]
     UnauthorizedDeckError,
-    
+
     #[error("{0}")]
-    InternalError(String)
+    InternalError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -53,13 +53,34 @@ pub enum NetworkError {
 pub enum GameLogicError {
     #[error("Card played is not in hand")]
     CardPlayedIsNotInHand,
+
+    #[error("Unable to get card details")]
+    UnableToGetCardDetails,
+
+    #[error("Player ID does not match with request's")]
+    PlayerIdDoesNotMatch,
+
+    #[error("Player was not found in Hashmap")]
+    PlayerNotFound,
     
     #[error("Function `{0}` was not found for card `{1}`")]
     FunctionNotFound(String, String),
 
     #[error("Unable to call Lua function `{0}`")]
     FunctionNotCallable(String),
-    
+
     #[error("Invalid GameAction return")]
-    InvalidGameActions
+    InvalidGameActions,
+
+    #[error("Not player's turn")]
+    NotPlayerTurn,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CardRequestError {
+    #[error("Card `{0}` was not found")]
+    CardNotFound(String),
+    
+    #[error("{0}")]
+    UnexpectedCardRequestError(String)
 }
