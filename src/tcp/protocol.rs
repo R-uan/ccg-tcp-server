@@ -2,20 +2,20 @@ use super::client::{Client, TemporaryClient};
 use crate::game::lua_context::LuaContext;
 use crate::models::client_requests::PlayCardRequest;
 use crate::models::deck::Card;
-use crate::tcp::header::{Header, HeaderType};
+use crate::tcp::header::HeaderType;
+use crate::tcp::packet::Packet;
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{GameLogicError, NetworkError, PlayerConnectionError};
 use crate::{
     game::player::Player,
-    utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
+    utils::{checksum::CheckSum, logger::Logger},
 };
-use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::time;
-use crate::tcp::packet::Packet;
 
+/// The Protocol struct handles the communication protocol for the server, managing client connections and packet processing.
 pub struct Protocol {
     pub server: Arc<ServerInstance>,
 }
@@ -25,6 +25,23 @@ impl Protocol {
         Protocol { server }
     }
 
+    /// Handles incoming packets from a client.
+    ///
+    /// - Parses the packet from the provided buffer.
+    /// - Validates the packet's checksum.
+    /// - Logs the packet details.
+    /// - If the packet is valid, it calls `handle_packet` to process it.
+    /// - If the checksum is invalid, it sends an `InvalidChecksum` packet to the client and disconnects.
+    ///
+    /// # Arguments
+    /// * `client` - The client that sent the packet.
+    /// * `buffer` - The byte buffer containing the incoming packet data.
+    ///
+    /// # Returns
+    /// * None if the packet is processed successfully.
+    /// * Sends an `InvalidChecksum` packet and disconnects the client if the checksum is invalid.
+    ///
+    /// Logs all outcomes, including errors and successful packet processing.
     pub async fn handle_incoming(&self, client: Arc<Client>, buffer: &[u8]) {
         let addr = client.addr.read().await;
         if let Ok(packet) = Packet::parse(&buffer) {
@@ -49,13 +66,17 @@ impl Protocol {
         }
     }
 
-    /// Attempts to send a packet to the client, retrying up to 3 times on failure.
+    /// Sends a packet to the client, retrying up to 3 times if the send fails.
     ///
-    /// - Serializes the packet and writes it to the client's stream.
-    /// - Waits 500ms between retries if sending fails.
-    /// - Returns `Err(PackageWriteError)` after 3 failed attempts.
+    /// If all attempts fail, it disconnects the client and returns an error.
     ///
-    /// Logs all outcomes
+    /// # Arguments
+    /// * `client` - The client to which the packet should be sent.
+    /// * `packet` - The packet to send.
+    ///
+    /// # Returns
+    /// * `Ok(())` if the packet was sent successfully.
+    /// * `Err(NetworkError)` if the packet could not be sent after 3 attempts.
     pub async fn send_packet(
         &self,
         client: Arc<Client>,
@@ -88,7 +109,14 @@ impl Protocol {
         Err(NetworkError::PackageWriteError("unknown error".to_string()))
     }
 
-    
+    /// Disconnects a client by setting its connected state to false and logging the disconnection.
+    ///
+    /// # Arguments
+    /// * `client` - The client to disconnect.
+    ///
+    /// This function updates the client's connection status and logs the disconnection event.
+    ///
+    /// It does not send any packets to the client; it simply marks the client as disconnected.
     async fn disconnect(&self, client: Arc<Client>) {
         let addr = client.addr.read().await;
         Logger::info(&format!("[PROTOCOL] Client `{addr}` disconnected"));
@@ -96,10 +124,11 @@ impl Protocol {
         *connected_guard = false;
     }
 
-    /// Sends a packet to the client, disconnecting if the send fails.
+    /// Sends a packet to the client, and if it fails, it attempts to disconnect the client.
     ///
-    /// Useful for simplifying repeated send-and-disconnect patterns.
-    /// Prevents duplicated error handling logic throughout packet handling.
+    /// # Arguments
+    /// * `client` - The client to which the packet should be sent.
+    /// * `packet` - The packet to send.
     async fn send_or_disconnect(&self, client: Arc<Client>, packet: &Packet) {
         let client_clone = Arc::clone(&client);
         if self.send_packet(client, packet).await.is_err() {
@@ -107,12 +136,18 @@ impl Protocol {
         }
     }
 
+    /// Sends a packet to the client and then disconnects the client independent of the send result.
+    ///
+    /// # Arguments
+    /// * `client` - The client to which the packet should be sent.
+    /// * `packet` - The packet to send.
     async fn send_and_disconnect(&self, client: Arc<Client>, packet: &Packet) {
         let client_clone = Arc::clone(&client);
         let _ = self.send_packet(client, packet).await;
         self.disconnect(client_clone).await;
     }
 
+    /// Handles a packet received from a client based on its header type.
     async fn handle_packet(&self, client: Arc<Client>, packet: &Packet) {
         let message_type = &packet.header.header_type;
         match message_type {
@@ -136,6 +171,18 @@ impl Protocol {
         }
     }
 
+    /// Handles a new connection request from a temporary client.
+    ///
+    /// This function authenticates the player based on the provided packet payload.
+    /// If the authentication is successful, it creates a new `Client` instance and adds it to the server's player list.
+    /// If the temporary client cannot be unwrapped, it returns an error.
+    /// # Arguments
+    /// * `temp_client` - The temporary client that is attempting to connect.
+    /// * `packet` - The packet containing the authentication payload.
+    ///
+    /// # Returns
+    /// * `Ok(())` if the connection is successfully established.
+    /// * `Err(PlayerConnectionError)` if there is an error during the connection process.
     pub async fn handle_connect(
         self: Arc<Self>,
         temp_client: Arc<TemporaryClient>,
@@ -166,6 +213,20 @@ impl Protocol {
         }
     }
 
+    /// Handles a reconnection request from a temporary client.
+    ///
+    /// This function attempts to authenticate the player based on the provided packet payload.
+    /// If the player is found in the server's player list, it attempts to reconnect the player.
+    /// If the temporary client cannot be unwrapped, it returns an error.
+    /// If the player is not found, it returns an error indicating that the player is not connected to the match.
+    ///
+    /// # Arguments
+    /// * `temp_client` - The temporary client that is attempting to reconnect.
+    /// * `packet` - The packet containing the authentication payload.
+    ///
+    /// # Returns
+    /// * `Ok(())` if the reconnection is successfully established.
+    /// * `Err(PlayerConnectionError)` if there is an error during the reconnection process.
     pub async fn handle_reconnect(
         self: Arc<Self>,
         temp_client: Arc<TemporaryClient>,
@@ -181,7 +242,7 @@ impl Protocol {
             &temp_client.addr, &authenticated_player.username
         ));
         let players_map = self.server.players.read().await;
-        
+
         if let Some(client) = players_map.get(&authenticated_player.player_id) {
             match Arc::try_unwrap(temp_client) {
                 Ok(temp) => {
@@ -322,6 +383,13 @@ impl Protocol {
         Ok(())
     }
 
+    /// Sends any missed packets to the client.
+    ///
+    /// This function retrieves the missed packets from the client's queue and sends them one by one.
+    /// It uses a loop to send each packet, waiting for a short duration between sends to avoid overwhelming the client.
+    ///
+    /// # Arguments
+    /// * `client` - The client to which the missed packets should be sent.
     pub async fn send_missed_packets(&self, client: Arc<Client>) {
         let mut packets_lock = client.missed_packets.write().await;
         loop {

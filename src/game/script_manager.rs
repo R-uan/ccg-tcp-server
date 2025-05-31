@@ -15,14 +15,15 @@ use mlua::{Function, Lua, LuaSerdeExt, Value};
 use tokio::sync::Mutex;
 
 pub struct ScriptManager {
-    pub lua: Arc<Lua>,
-    pub core: Mutex<HashMap<String, Function>>,
-    pub cards: Mutex<HashMap<String, Function>>,
-    pub effects: Mutex<HashMap<String, Function>>,
-    pub triggers: Mutex<HashMap<String, Function>>,
+    pub lua: Arc<Lua>,                              // Shared Lua VM instance
+    pub core: Mutex<HashMap<String, Function>>,     // Core script functions
+    pub cards: Mutex<HashMap<String, Function>>,    // Card-related script functions
+    pub effects: Mutex<HashMap<String, Function>>,  // Effect-related script functions
+    pub triggers: Mutex<HashMap<String, Function>>, // Trigger-related script functions
 }
 
 impl ScriptManager {
+    /// Creates a new instance of `ScriptManager` with an initialized Lua VM and empty function maps.
     pub fn new_vm() -> Self {
         let lua = Lua::new();
         return Self {
@@ -34,6 +35,8 @@ impl ScriptManager {
         };
     }
 
+    /// Loads Lua scripts from the `./scripts` directory into the Lua VM.
+    /// Only directories named "core", "cards", "effects", or "triggers" are processed.
     pub fn load_scripts(&mut self) -> Result<(), Error> {
         let folders = vec!["core", "cards", "effects", "triggers"];
         for entry in fs::read_dir("./scripts")? {
@@ -50,6 +53,8 @@ impl ScriptManager {
         return Ok(());
     }
 
+    /// Loads individual Lua files from a given directory into the Lua VM.
+    /// Logs errors if a file cannot be read or executed.
     fn load_file(&self, dir: &PathBuf) -> Result<(), Error> {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
@@ -71,6 +76,8 @@ impl ScriptManager {
         Ok(())
     }
 
+    /// Sets global Lua functions into categorized maps (`core`, `cards`, `effects`, `triggers`).
+    /// Reads function names from `.txt` files in the `./scripts` directory.
     pub(crate) async fn set_globals(&mut self) {
         let globals = self.lua.globals();
         if let Ok(files) = fs::read_dir("./scripts") {
@@ -123,6 +130,8 @@ impl ScriptManager {
         }
     }
 
+    /// Retrieves a Lua function from the appropriate map based on the action prefix.
+    /// The action format is expected to be `<category>:<function_name>`.
     pub async fn get_function(&self, action: &str) -> Option<Function> {
         let action_parts: Vec<&str> = action.splitn(2, ":").collect();
         return match action_parts.as_slice() {
@@ -134,6 +143,8 @@ impl ScriptManager {
         };
     }
 
+    /// Calls a Lua function by its action name and returns a list of `GameAction` results.
+    /// Returns an error if the function is not callable or the result is invalid.
     pub async fn call_function(&self, action: &str) -> Result<Vec<GameAction>, GameLogicError> {
         if let Some(function) = self.get_function(action).await {
             let lua_value: Value = function
@@ -152,6 +163,8 @@ impl ScriptManager {
         ));
     }
 
+    /// Calls a Lua function with a `LuaContext` and returns a list of `GameAction` results.
+    /// Returns an error if the function is not callable or the result is invalid.
     pub async fn call_function_ctx(
         &self,
         action: &str,
@@ -179,7 +192,6 @@ impl ScriptManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Debug;
 
     #[tokio::test]
     async fn test_get_function() {

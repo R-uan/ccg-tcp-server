@@ -1,6 +1,5 @@
 use crate::models::client_requests::ReconnectionRequest;
 use crate::models::http_response::AuthenticatedPlayer;
-use crate::utils::errors::PlayerConnectionError::UnexpectedPlayerError;
 use crate::{
     models::{client_requests::ConnectionRequest, deck::Deck, http_response::PartialPlayerProfile},
     utils::{errors::PlayerConnectionError, logger::Logger},
@@ -9,6 +8,7 @@ use crate::{
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
 
+/// Represents a player in the game, including their profile, deck, and authentication details.
 #[derive(Serialize, Deserialize)]
 pub struct Player {
     pub id: String,
@@ -20,19 +20,14 @@ pub struct Player {
 }
 
 impl Player {
-    /// Attempts to construct a `Player` from a UTF-8-encoded payload.
+    /// Creates a new player connection by deserializing the payload and fetching the player's profile and deck.
     ///
-    /// Expects the payload to be a newline-delimited string with the following format:
-    /// ```
-    /// <id>
-    /// <username>
-    /// <current_deck_id>
-    /// <level>
-    /// ```
+    /// # Arguments
+    /// * `payload` - A byte slice containing the serialized connection request.
     ///
-    /// Returns:
-    /// - `Ok(Player)` if parsing succeeds
-    /// - `Err(InvalidPlayerPayload)` if UTF-8 is invalid or format is incorrect
+    /// # Returns
+    /// * `Ok(Player)` - The newly created player instance.
+    /// * `Err(PlayerConnectionError)` - An error if the payload is invalid or the profile/deck fetch fails.
     pub async fn new_connection(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
         return match serde_cbor::from_slice::<ConnectionRequest>(payload) {
             Err(error) => {
@@ -69,6 +64,14 @@ impl Player {
         };
     }
 
+    /// Handles player reconnection by verifying the authentication token and matching the player ID.
+    ///
+    /// # Arguments
+    /// * `payload` - A byte slice containing the serialized reconnection request.
+    ///
+    /// # Returns
+    /// * `Ok(AuthenticatedPlayer)` - The authenticated player instance.
+    /// * `Err(PlayerConnectionError)` - An error if the payload is invalid or authentication fails.
     pub async fn reconnection(
         payload: &[u8],
     ) -> Result<AuthenticatedPlayer, PlayerConnectionError> {
@@ -90,6 +93,14 @@ impl Player {
         };
     }
 
+    /// Verifies the player's authentication token by contacting the authentication server.
+    ///
+    /// # Arguments
+    /// * `token` - The authentication token to verify.
+    ///
+    /// # Returns
+    /// * `Ok(AuthenticatedPlayer)` - The authenticated player details.
+    /// * `Err(PlayerConnectionError)` - An error if the token is invalid or the server response is unexpected.
     async fn verify_authentication(
         token: &str,
     ) -> Result<AuthenticatedPlayer, PlayerConnectionError> {
@@ -130,6 +141,15 @@ impl Player {
         };
     }
 
+    /// Fetches the player's deck from the deck server using the provided deck ID and authentication token.
+    ///
+    /// # Arguments
+    /// * `deck_id` - The ID of the deck to fetch.
+    /// * `token` - The authentication token for the request.
+    ///
+    /// # Returns
+    /// * `Ok(Deck)` - The player's deck.
+    /// * `Err(PlayerConnectionError)` - An error if the deck is not found or the server response is invalid.
     async fn get_player_deck(deck_id: &str, token: &str) -> Result<Deck, PlayerConnectionError> {
         let settings = SETTINGS.get().expect("Settings not initialized");
         let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
@@ -165,6 +185,14 @@ impl Player {
         };
     }
 
+    /// Fetches the player's profile from the authentication server using the provided token.
+    ///
+    /// # Arguments
+    /// * `token` - The authentication token for the request.
+    ///
+    /// # Returns
+    /// * `Ok(PartialPlayerProfile)` - The player's profile.
+    /// * `Err(PlayerConnectionError)` - An error if the profile fetch fails or the response is invalid.
     async fn get_player_profile(
         token: &str,
     ) -> Result<PartialPlayerProfile, PlayerConnectionError> {

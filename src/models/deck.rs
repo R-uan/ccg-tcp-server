@@ -4,7 +4,6 @@ use crate::utils::logger::Logger;
 use crate::SETTINGS;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::fmt::format;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Deck {

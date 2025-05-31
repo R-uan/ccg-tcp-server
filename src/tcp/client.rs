@@ -1,4 +1,6 @@
-use super::protocol::{Protocol};
+use super::protocol::Protocol;
+use crate::tcp::header::HeaderType;
+use crate::tcp::packet::Packet;
 use crate::{game::player::Player, utils::logger::Logger};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -9,8 +11,6 @@ use tokio::{
     },
     sync::RwLock,
 };
-use crate::tcp::header::HeaderType;
-use crate::tcp::packet::Packet;
 
 /// Represents a connected client in the game server.
 ///
@@ -91,6 +91,13 @@ impl Client {
         }
     }
 
+    /// Listens to game state updates and sends them to the client.
+    ///
+    /// - If the client is disconnected, queues the game state packets.
+    /// - Sends missed packets if any are queued.
+    /// - Sends the current game state to the client.
+    ///
+    /// This function runs in a loop and exits when the receiver is dropped.
     async fn listen_to_game_state(self: Arc<Self>) {
         let protocol_clone = Arc::clone(&self.protocol);
         let transmitter_clone = Arc::clone(&protocol_clone.server.transmitter);
@@ -112,17 +119,23 @@ impl Client {
 
                 continue;
             }
-            
+
             if self.missed_packets.read().await.len() > 0 {
                 let client_clone = Arc::clone(&self);
                 self.protocol.send_missed_packets(client_clone).await;
             }
-            
+
             let client_clone = Arc::clone(&self);
             let _ = self.protocol.send_packet(client_clone, &game_state).await;
         }
     }
 
+    /// Reconnects a client using a temporary client instance.
+    ///
+    /// - Updates the client's read/write streams, address, and connection status.
+    ///
+    /// # Arguments
+    /// - `temporary_client`: A `TemporaryClient` instance containing the new connection details.
     pub async fn reconnect(self: Arc<Self>, temporary_client: TemporaryClient) {
         let (read, write) = temporary_client.stream.into_split();
 
@@ -138,13 +151,32 @@ impl Client {
     }
 }
 
+/// Represents a temporary client used during the authentication or reconnection process.
+///
+/// This struct holds the necessary information for handling a temporary client connection,
+/// such as the client's socket address, the TCP stream, and the protocol instance.
+///
+/// Temporary clients are used to authenticate new connections or handle reconnection requests
+/// before they are fully integrated into the main client management system.
 pub struct TemporaryClient {
+    /// The socket address of the temporary client.
     pub addr: SocketAddr,
+    /// The protocol instance used to handle communication with the client.
     pub protocol: Arc<Protocol>,
+    /// The TCP stream associated with the temporary client.
     pub stream: TcpStream,
 }
 
 impl TemporaryClient {
+    /// Creates a new `TemporaryClient` instance.
+    ///
+    /// # Arguments
+    /// - `stream`: The TCP stream for the temporary client.
+    /// - `addr`: The socket address of the temporary client.
+    /// - `protocol`: The protocol instance to handle client communication.
+    ///
+    /// # Returns
+    /// A new `TemporaryClient` instance.
     pub async fn new(stream: TcpStream, addr: SocketAddr, protocol: Arc<Protocol>) -> Self {
         return TemporaryClient {
             addr,
@@ -153,6 +185,13 @@ impl TemporaryClient {
         };
     }
 
+    /// Handles the lifecycle of a temporary client.
+    ///
+    /// - Reads data from the client for authentication.
+    /// - Parses the packet and determines if it's a `Connect` or `Reconnect` request.
+    /// - Calls the appropriate protocol handler for authentication.
+    ///
+    /// Exits if the client sends invalid data or an error occurs.
     pub async fn handle_temp_client(mut self) {
         let mut buffer = [0; 1024];
         let addr = self.addr.clone();

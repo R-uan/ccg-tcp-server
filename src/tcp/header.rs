@@ -1,6 +1,6 @@
-use std::fmt::Display;
 use crate::utils::checksum::CheckSum;
 use crate::utils::errors::ProtocolError;
+use std::fmt::Display;
 
 /// Represents the type of message in a protocol packet.
 ///
@@ -8,15 +8,26 @@ use crate::utils::errors::ProtocolError;
 ///
 /// # Variants
 ///
+/// ## General (0x00–0x03):
 /// - `Disconnect` - Client is disconnecting.
 /// - `Connect` - Client is initiating a connection.
-/// - `GameState` - Server is sending current game state.
+/// - `Ping` - Client is sending a ping to the server.
+/// - `Reconnect` - Client is attempting to reconnect.
 ///
-/// ### Errors (0xFB–0xFF):
+/// ## Game State (0x10):
+/// - `GameState` - Server is sending the current game state.
+///
+/// ## Actions (0x11–0x12):
+/// - `PlayCard` - Client is playing a card.
+/// - `AttackPlayer` - Client is attacking another player.
+///
+/// ## Errors (0xFA–0xFF):
+/// - `InvalidHeader` - Malformed or unrecognized header.
 /// - `AlreadyConnected` - Client is already connected.
 /// - `InvalidPlayerData` - Malformed or missing player data.
 /// - `InvalidChecksum` - Payload failed checksum validation.
-/// - `InvalidHeader` - Malformed or unrecognized header.
+/// - `FailedToConnectPlayer` - Server failed to connect the player.
+/// - `InvalidPacketPayload` - Packet payload is invalid.
 /// - `ERROR` - Generic error.
 #[repr(u8)]
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +52,13 @@ pub enum HeaderType {
 }
 
 impl Display for HeaderType {
+    /// Formats the `HeaderType` as a human-readable string.
+    ///
+    /// # Arguments
+    /// - `f`: The formatter to write the string to.
+    ///
+    /// # Returns
+    /// A `Result` indicating success or failure of the formatting operation.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
             HeaderType::Disconnect => String::from("DISCONNECT"),
@@ -61,7 +79,7 @@ impl Display for HeaderType {
 
             HeaderType::GameState => String::from("GAME_STATE"),
         };
-        
+
         write!(f, "{}", str)
     }
 }
@@ -71,10 +89,14 @@ impl TryFrom<u8> for HeaderType {
 
     /// Attempts to convert a `u8` into a `HeaderType`.
     ///
-    /// Returns `Ok(HeaderType)` if the byte matches a known variant.
-    /// Returns `Err(())` if the byte does not correspond to any defined message type.
+    /// # Arguments
+    /// - `value`: The `u8` value to convert.
     ///
-    /// Useful for deserializing incoming packets.
+    /// # Returns
+    /// - `Ok(HeaderType)`: If the value matches a known header type.
+    /// - `Err(())`: If the value does not correspond to any defined header type.
+    ///
+    /// This is useful for deserializing incoming packets.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0x00 => Ok(HeaderType::Disconnect),
@@ -113,6 +135,13 @@ impl Header {
     /// Creates a new `PacketHeader` from the given message type and payload.
     ///
     /// Calculates the checksum and payload length automatically.
+    ///
+    /// # Arguments
+    /// - `header_type`: The type of the message (e.g., `Connect`, `Disconnect`).
+    /// - `payload`: The payload data for the packet.
+    ///
+    /// # Returns
+    /// A new `Header` instance with the calculated checksum and payload length.
     pub fn new(header_type: HeaderType, payload: &[u8]) -> Self {
         Self {
             checksum: CheckSum::new(payload) as i16,
@@ -123,7 +152,10 @@ impl Header {
 
     /// Serializes the header into a fixed-size byte array.
     ///
-    /// Format: [type, payload_len (2 bytes), checksum (2 bytes), 0x0A].
+    /// Format: `[type, payload_len (2 bytes), checksum (2 bytes), 0x0A]`.
+    ///
+    /// # Returns
+    /// A boxed array of bytes representing the serialized header.
     pub fn wrap_header(&self) -> Box<[u8]> {
         let checksum: u16 = self.checksum as u16;
         let payload_length: u16 = self.payload_length as u16;
@@ -141,7 +173,14 @@ impl Header {
 
     /// Parses a `PacketHeader` from a byte slice.
     ///
-    /// Returns an error if the slice is too short or has an invalid type.
+    /// Validates the format and extracts the header fields.
+    ///
+    /// # Arguments
+    /// - `bytes`: A byte slice containing the serialized header.
+    ///
+    /// # Returns
+    /// - `Ok(Header)`: If the byte slice is valid and contains a recognizable header.
+    /// - `Err(ProtocolError)`: If the byte slice is invalid or has an unrecognized type.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() != 6 || bytes[5] != 0x0A {
             return Err(ProtocolError::InvalidHeaderError(format!(

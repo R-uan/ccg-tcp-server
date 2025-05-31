@@ -5,45 +5,54 @@ use tokio::{
     sync::{
         broadcast::{self, Sender},
         Mutex, RwLock,
-    }
-    ,
+    },
 };
 
-use super::{
-    client::Client
-};
+use super::client::Client;
 use crate::tcp::client::TemporaryClient;
+use crate::tcp::packet::Packet;
 use crate::tcp::protocol::Protocol;
 use crate::{
     game::{game_state::GameState, script_manager::ScriptManager},
     utils::logger::Logger,
 };
-use crate::tcp::packet::Packet;
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
+/// Represents the main server instance.
+///
+/// Manages the TCP listener, game state, Lua scripts, connected players, and packet broadcasting.
 pub struct ServerInstance {
+    /// The TCP listener for accepting incoming client connections.
     pub socket: TcpListener,
-    // pub protocol: Arc<Protocol>,
+    /// The current game state, shared across tasks.
     pub game_state: Arc<RwLock<GameState>>,
+    /// The Lua script manager for handling game logic scripts.
     pub scripts: Arc<RwLock<ScriptManager>>,
+    /// The transmitter for broadcasting packets to clients.
     pub transmitter: Arc<Mutex<Sender<Packet>>>,
+    /// A map of connected players, identified by their unique IDs.
     pub players: Arc<RwLock<HashMap<String, Arc<Client>>>>,
 }
 
 impl ServerInstance {
     /// Creates and binds a new `ServerInstance` to the given port.
     ///
-    /// On success, returns an initialized server with a bound TCP listener.
-    /// Returns an error if the bind fails.
+    /// - Initializes the Lua script manager and game state.
+    /// - Binds the TCP listener to the specified port.
+    ///
+    /// # Arguments
+    /// - `port`: The port number to bind the server to.
+    ///
+    /// # Returns
+    /// - `Ok(ServerInstance)`: If the server is successfully created and bound.
+    /// - `Err(Error)`: If the binding fails.
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
         // Lua scripting START
         let mut lua_vm = ScriptManager::new_vm();
         lua_vm.load_scripts()?;
         lua_vm.set_globals().await;
-
         let scripts = Arc::new(RwLock::new(lua_vm));
-        let scripts_clone = Arc::clone(&scripts);
         // Lua scripting END
 
         let game_state = GameState::new_game();
@@ -72,16 +81,20 @@ impl ServerInstance {
     pub async fn listen(self: Arc<Self>) {
         let protocol = Arc::new(Protocol::new(Arc::clone(&self)));
 
+        // Spawn a background task to handle game state updates.
         tokio::spawn({
             let protocol_clone = Arc::clone(&protocol);
             async move { protocol_clone.cycle_game_state().await }
         });
 
+        // Main loop to accept and handle incoming client connections.
         loop {
             if let Ok((stream, addr)) = self.socket.accept().await {
                 Logger::info(&format!("[CONNECTION] Accepted request from `{addr}`"));
                 let protocol_clone = Arc::clone(&protocol);
                 let temp_client = TemporaryClient::new(stream, addr, protocol_clone).await;
+
+                // Spawn a task to handle the temporary client.
                 tokio::spawn(async move {
                     temp_client.handle_temp_client().await;
                 });
