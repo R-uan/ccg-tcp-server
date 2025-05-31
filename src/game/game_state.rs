@@ -6,6 +6,7 @@ use crate::models::{
     deck::Card,
     views::PrivatePlayerView,
 };
+use crate::models::game_action::GameAction;
 use crate::utils::logger::Logger;
 
 pub struct GameState {
@@ -58,4 +59,6 @@ impl GameState {
         let mut card_vec = self.game_cards.write().await;
         card_vec.insert(card.id.to_string(), card);
     }
+    
+    pub async fn apply_actions(&self, actions: Vec<GameAction>) {}
 }

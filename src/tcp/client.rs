@@ -1,4 +1,4 @@
-use super::protocol::{MessageType, Packet, Protocol};
+use super::protocol::{Protocol};
 use crate::{game::player::Player, utils::logger::Logger};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -9,6 +9,8 @@ use tokio::{
     },
     sync::RwLock,
 };
+use crate::tcp::header::HeaderType;
+use crate::tcp::packet::Packet;
 
 /// Represents a connected client in the game server.
 ///
@@ -165,7 +167,7 @@ impl TemporaryClient {
 
         match Packet::parse(&buffer[..bytes]) {
             Ok(packet) => {
-                if packet.header.header_type == MessageType::Connect {
+                if packet.header.header_type == HeaderType::Connect {
                     let temp_arc = Arc::new(self);
                     let protocol = Arc::clone(&temp_arc.protocol);
                     if let Err(error) = protocol.handle_connect(temp_arc, &packet).await {
@@ -173,7 +175,7 @@ impl TemporaryClient {
                             "[CLIENT] Could not authenticate `{addr}` ({error})"
                         ));
                     };
-                } else if packet.header.header_type == MessageType::Reconnect {
+                } else if packet.header.header_type == HeaderType::Reconnect {
                     let temp_arc = Arc::new(self);
                     let protocol = Arc::clone(&temp_arc.protocol);
                     if let Err(error) = protocol.handle_reconnect(temp_arc, &packet).await {

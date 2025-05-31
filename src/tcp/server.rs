@@ -10,8 +10,7 @@ use tokio::{
 };
 
 use super::{
-    client::Client,
-    protocol::Packet,
+    client::Client
 };
 use crate::tcp::client::TemporaryClient;
 use crate::tcp::protocol::Protocol;
@@ -19,6 +18,7 @@ use crate::{
     game::{game_state::GameState, script_manager::ScriptManager},
     utils::logger::Logger,
 };
+use crate::tcp::packet::Packet;
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 

@@ -2,118 +2,19 @@ use super::client::{Client, TemporaryClient};
 use crate::game::lua_context::LuaContext;
 use crate::models::client_requests::PlayCardRequest;
 use crate::models::deck::Card;
-use crate::models::game_action::GameAction;
+use crate::tcp::header::{Header, HeaderType};
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{GameLogicError, NetworkError, PlayerConnectionError};
 use crate::{
     game::player::Player,
     utils::{checksum::CheckSum, errors::ProtocolError, logger::Logger},
 };
-use mlua::LuaSerdeExt;
-use std::collections::VecDeque;
 use std::fmt::Display;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::OwnedWriteHalf;
-use tokio::sync::RwLock;
 use tokio::time;
-
-/// Represents the type of message in a protocol packet.
-///
-/// Each variant maps to a specific `u8` value used during transmission.
-///
-/// # Variants
-///
-/// - `Disconnect` - Client is disconnecting.
-/// - `Connect` - Client is initiating a connection.
-/// - `GameState` - Server is sending current game state.
-///
-/// ### Errors (0xFB–0xFF):
-/// - `AlreadyConnected` - Client is already connected.
-/// - `InvalidPlayerData` - Malformed or missing player data.
-/// - `InvalidChecksum` - Payload failed checksum validation.
-/// - `InvalidHeader` - Malformed or unrecognized header.
-/// - `ERROR` - Generic error.
-#[repr(u8)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum MessageType {
-    Disconnect = 0x00,
-    Connect = 0x01,
-    Ping = 0x02,
-    Reconnect = 0x03,
-
-    GameState = 0x10,
-
-    PlayCard = 0x11,
-    AttackPlayer = 0x12,
-
-    InvalidHeader = 0xFA,
-    AlreadyConnected = 0xFB,
-    InvalidPlayerData = 0xFC,
-    InvalidChecksum = 0xFD,
-    FailedToConnectPlayer = 0xF0,
-    InvalidPacketPayload = 0xF1,
-    ERROR = 0xFE,
-}
-
-impl Display for MessageType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
-            MessageType::Disconnect => String::from("DISCONNECT"),
-            MessageType::Connect => String::from("CONNECT"),
-            MessageType::Reconnect => String::from("RECONNECT"),
-            MessageType::Ping => String::from("PING"),
-
-            MessageType::PlayCard => String::from("PLAY_CARD"),
-            MessageType::AttackPlayer => String::from("ATTACK_PLAYER"),
-
-            MessageType::InvalidHeader => String::from("INVALID_HEADER"),
-            MessageType::AlreadyConnected => String::from("ALREADY_CONNECTED"),
-            MessageType::InvalidPlayerData => String::from("INVALID_PLAYER_DATA"),
-            MessageType::InvalidChecksum => String::from("INVALID_CHECKSUM"),
-            MessageType::FailedToConnectPlayer => String::from("FAILED_TO_CONNECT_PLAYER"),
-            MessageType::InvalidPacketPayload => String::from("INVALID_PACKET_PAYLOAD"),
-            MessageType::ERROR => String::from("ERROR"),
-
-            MessageType::GameState => String::from("GAME_STATE"),
-        };
-        return write!(f, "{}", str);
-    }
-}
-
-impl TryFrom<u8> for MessageType {
-    type Error = ();
-
-    /// Attempts to convert a `u8` into a `MessageType`.
-    ///
-    /// Returns `Ok(MessageType)` if the byte matches a known variant.
-    /// Returns `Err(())` if the byte does not correspond to any defined message type.
-    ///
-    /// Useful for deserializing incoming packets.
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x00 => Ok(MessageType::Disconnect),
-            0x01 => Ok(MessageType::Connect),
-            0x02 => Ok(MessageType::Ping),
-            0x03 => Ok(MessageType::Reconnect),
-
-            0x10 => Ok(MessageType::GameState),
-            0x11 => Ok(MessageType::PlayCard),
-            0x12 => Ok(MessageType::AttackPlayer),
-
-            0xFA => Ok(MessageType::InvalidHeader),
-            0xFB => Ok(MessageType::AlreadyConnected),
-            0xFC => Ok(MessageType::InvalidPlayerData),
-            0xFD => Ok(MessageType::InvalidChecksum),
-            0xF0 => Ok(MessageType::FailedToConnectPlayer),
-            0xF1 => Ok(MessageType::InvalidPacketPayload),
-            0xFE => Ok(MessageType::ERROR),
-            _ => Err(()),
-        }
-    }
-}
+use crate::tcp::packet::Packet;
 
 pub struct Protocol {
     pub server: Arc<ServerInstance>,
@@ -121,7 +22,7 @@ pub struct Protocol {
 
 impl Protocol {
     pub fn new(server: Arc<ServerInstance>) -> Self {
-        return Protocol { server };
+        Protocol { server }
     }
 
     pub async fn handle_incoming(&self, client: Arc<Client>, buffer: &[u8]) {
@@ -135,7 +36,7 @@ impl Protocol {
             if !CheckSum::check(&packet.header.checksum, &packet.payload) {
                 Logger::error("[PROTOCOL] Invalid checksum value");
                 drop(addr);
-                let packet = Packet::new(MessageType::InvalidChecksum, b"");
+                let packet = Packet::new(HeaderType::InvalidChecksum, b"");
                 self.send_or_disconnect(client, &packet).await;
                 return;
             } else {
@@ -184,14 +85,10 @@ impl Protocol {
         }
 
         self.disconnect(client).await;
-        return Err(NetworkError::PackageWriteError("unknown error".to_string()));
+        Err(NetworkError::PackageWriteError("unknown error".to_string()))
     }
 
-    /// Gracefully disconnects the client from the server.
-    ///
-    /// - Logs the disconnection.
-    /// - Removes the client from the global `CLIENTS` map.
-    /// - Sets its `connected` flag to `false`.
+    
     async fn disconnect(&self, client: Arc<Client>) {
         let addr = client.addr.read().await;
         Logger::info(&format!("[PROTOCOL] Client `{addr}` disconnected"));
@@ -219,13 +116,13 @@ impl Protocol {
     async fn handle_packet(&self, client: Arc<Client>, packet: &Packet) {
         let message_type = &packet.header.header_type;
         match message_type {
-            MessageType::Disconnect => self.handle_disconnect(client).await,
-            MessageType::PlayCard => {
+            HeaderType::Disconnect => self.handle_disconnect(client).await,
+            HeaderType::PlayCard => {
                 if let Ok(request) = serde_cbor::from_slice::<PlayCardRequest>(&packet.payload) {
                     let play_card = self.handle_play_card(client, &request).await;
                 } else {
                     let invalid_request = Packet::new(
-                        MessageType::InvalidPacketPayload,
+                        HeaderType::InvalidPacketPayload,
                         b"Could not parse play card request.",
                     );
                     let _ = self.send_packet(client.clone(), &invalid_request).await;
@@ -233,7 +130,7 @@ impl Protocol {
             }
             _ => {
                 Logger::warn("[PROTOCOL] Invalid header");
-                let packet = Packet::new(MessageType::InvalidHeader, b"");
+                let packet = Packet::new(HeaderType::InvalidHeader, b"");
                 self.send_or_disconnect(client, &packet).await;
             }
         }
@@ -249,7 +146,7 @@ impl Protocol {
             "[PROTOCOL] Client `{}` successfully authenticated as `{}`",
             &temp_client.addr, &player.username
         ));
-        return match Arc::try_unwrap(temp_client) {
+        match Arc::try_unwrap(temp_client) {
             Ok(temp) => {
                 let player_id_clone = player.id.clone();
                 let addr = temp.addr;
@@ -261,12 +158,12 @@ impl Protocol {
                     client.connect().await;
                 });
 
-                return Ok(());
+                Ok(())
             }
             Err(_) => Err(PlayerConnectionError::InternalError(
                 "Failed to unwrap temporary client".to_string(),
             )),
-        };
+        }
     }
 
     pub async fn handle_reconnect(
@@ -284,7 +181,8 @@ impl Protocol {
             &temp_client.addr, &authenticated_player.username
         ));
         let players_map = self.server.players.read().await;
-        return if let Some(client) = players_map.get(&authenticated_player.player_id) {
+        
+        if let Some(client) = players_map.get(&authenticated_player.player_id) {
             match Arc::try_unwrap(temp_client) {
                 Ok(temp) => {
                     Logger::info(&format!(
@@ -308,24 +206,38 @@ impl Protocol {
             Err(PlayerConnectionError::InternalError(
                 "Player not found in this match".to_string(),
             ))
-        };
+        }
     }
 
     async fn handle_disconnect(&self, client: Arc<Client>) {
-        let packet = Packet::new(MessageType::Disconnect, b"");
+        let packet = Packet::new(HeaderType::Disconnect, b"");
         self.send_and_disconnect(client, &packet).await;
     }
 
+    /// Handles a play card action from a client during a game turn.
+    ///
+    /// This function verifies the legitimacy of the card play request by performing several checks:
+    /// - Ensures the player exists in the current game state.
+    /// - Validates that the requesting client matches the internal player representation.
+    /// - Confirms it is the requesting player’s turn.
+    /// - Verifies the card is present in the player’s hand.
+    /// - Retrieves the full card data (fetching from external source if necessary).
+    /// - Executes the card’s `on_play` triggers via the Lua scripting engine.
+    ///
+    /// # Arguments
+    /// * `client` - The client attempting to play the card.
+    /// * `request` - The play card request containing the player and card ID.
+    ///
+    /// # Returns
+    /// * `Ok(())` if the action is successful.
+    /// * `Err(GameLogicError)` if any validation or execution step fails.
     async fn handle_play_card(
         &self,
         client: Arc<Client>,
         request: &PlayCardRequest,
     ) -> Result<(), GameLogicError> {
-        // Clones game state so it can check on stuff
         let game_state = self.server.game_state.read().await;
-        // Gets the player PrivatePlayerView from the player hashmap or return GameLogicError::PlayerNotFound
-        // as the operation can not continue without the player.
-        // PrivatePlayerView only contains data related to the game.
+        // Try to fetch the PrivatePlayerView for the given player ID. Return an error if not found.
         let player_view = game_state.players.get(&request.player_id).ok_or_else(|| {
             Logger::error(&format!("Player `{}` was not found", &request.player_id));
             return GameLogicError::PlayerNotFound;
@@ -334,12 +246,11 @@ impl Protocol {
         let private_player_view_clone = Arc::clone(player_view);
         let private_player_view_guard = private_player_view_clone.read().await;
 
-        // Clone player background data, in this case we are interested in the player's full deck
-        // to check if the card player is available.
+        // Clone and lock the Client player object to compare identity and access full player data.
         let player_clone = Arc::clone(&client.player);
         let player_guard = player_clone.read().await;
 
-        // Check if the client's player matches with the PrivatePlayerView from given ID.
+        // Ensure that the client attempting the action matches the player in the request.
         if &player_guard.id != &private_player_view_guard.id {
             Logger::warn(&format!(
                 "Client's player ID ({}) does not match request's ({})",
@@ -348,7 +259,7 @@ impl Protocol {
             return Err(GameLogicError::PlayerIdDoesNotMatch);
         }
 
-        // Check if the turn is open for the current player actor
+        //Confirm it is currently this player's turn.
         if &private_player_view_guard.id != &request.player_id {
             Logger::warn(&format!(
                 "It's not player's turn: {}",
@@ -371,9 +282,8 @@ impl Protocol {
                 return GameLogicError::CardPlayedIsNotInHand;
             })?;
 
-        // Get the full data of the cards from the game_cards property in game_state
-        // If the card is initially not found in the game_cards, it should request it on the spot
-        // as the card was previously confirmed to be on player's deck.
+        // Verify that the requested card is in the player's current hand.
+        // Retrieve the full card details from game_cards. If not present, fetch from external storage and add it to the shared card list.
         let game_cards_lock = game_state.game_cards.read().await;
         let full_card = match game_cards_lock.get(&card_view.id) {
             Some(card) => card,
@@ -382,13 +292,13 @@ impl Protocol {
                     .await
                     .map_err(|_| GameLogicError::UnableToGetCardDetails)?;
                 game_state.add_card(card).await;
-                game_cards_lock
-                    .get(&card_view.id).ok_or_else(|| {
+                game_cards_lock.get(&card_view.id).ok_or_else(|| {
                     return GameLogicError::UnableToGetCardDetails;
                 })?
             }
         };
 
+        // Iterate over the card’s on_play triggers, creating a Lua execution context for each.
         for action in &full_card.on_play {
             let lua_context = LuaContext::new(
                 Arc::clone(&self.server.game_state),
@@ -399,11 +309,14 @@ impl Protocol {
             )
             .await;
 
+            // Execute each script action using the ScriptManager and apply the resulting game actions to the state.
             let script_manager_clone = Arc::clone(&self.server.scripts);
             let script_manager_guard = script_manager_clone.read().await;
             let game_actions = script_manager_guard
                 .call_function_ctx(action, lua_context)
-                .await;
+                .await?;
+
+            game_state.apply_actions(game_actions).await;
         }
 
         Ok(())
@@ -437,129 +350,9 @@ impl Protocol {
             let game_state_bytes = game_state_guard.wrap_game_state();
             let transmitter_clone = Arc::clone(&self.server.transmitter);
             let transmitter_guard = transmitter_clone.lock().await;
-            let game_state_packet = Packet::new(MessageType::GameState, &game_state_bytes);
+            let game_state_packet = Packet::new(HeaderType::GameState, &game_state_bytes);
             let _ = transmitter_guard.send(game_state_packet);
             interval.tick().await;
         }
-    }
-}
-
-/// Represents a fixed-size protocol header for game packet transmission.
-///
-/// Contains the message type, payload length, and a checksum for validation.
-/// Serialized as 6 bytes total when sent over the network.
-#[derive(Clone)]
-pub struct ProtocolHeader {
-    pub checksum: i16,
-    pub payload_length: i16,
-    pub header_type: MessageType,
-}
-
-impl ProtocolHeader {
-    /// Creates a new `ProtocolHeader` from the given message type and payload.
-    ///
-    /// Calculates the checksum and payload length automatically.
-    pub fn new(header_type: MessageType, payload: &[u8]) -> Self {
-        return Self {
-            checksum: CheckSum::new(payload) as i16,
-            payload_length: payload.len() as i16,
-            header_type,
-        };
-    }
-
-    /// Serializes the header into a fixed-size byte array.
-    ///
-    /// Format: [type, payload_len (2 bytes), checksum (2 bytes), 0x0A].
-    pub fn wrap_header(&self) -> Box<[u8]> {
-        let checksum: u16 = self.checksum as u16;
-        let payload_length: u16 = self.payload_length as u16;
-        let header_type: u8 = self.header_type.to_owned() as u8;
-
-        return Box::new([
-            header_type,
-            ((payload_length >> 8) & 0xFF) as u8,
-            (payload_length & 0xFF) as u8,
-            ((checksum >> 8) & 0xFF) as u8,
-            (checksum & 0xFF) as u8,
-            0x0A,
-        ]);
-    }
-
-    /// Parses a `ProtocolHeader` from a byte slice.
-    ///
-    /// Returns an error if the slice is too short or has an invalid type.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        if bytes.len() != 6 || bytes[5] != 0x0A {
-            return Err(ProtocolError::InvalidHeaderError(format!(
-                "Format invalid: {:?}",
-                bytes
-            )));
-        }
-
-        return match MessageType::try_from(bytes[0]) {
-            Err(_) => Err(ProtocolError::InvalidHeaderError(
-                "Invalid message type.".to_string(),
-            )),
-            Ok(header_type) => {
-                let checksum: i16 = u16::from_be_bytes([bytes[3], bytes[4]]) as i16;
-                let payload_length: i16 = u16::from_be_bytes([bytes[1], bytes[2]]) as i16;
-
-                Ok(Self {
-                    header_type,
-                    payload_length,
-                    checksum,
-                })
-            }
-        };
-    }
-}
-
-/// Represents a complete network packet with a protocol header and payload.
-///
-/// Handles serialization and parsing for message transmission.
-#[derive(Clone)]
-pub struct Packet {
-    pub header: ProtocolHeader,
-    pub payload: Box<[u8]>,
-}
-
-impl Packet {
-    /// Parses a raw byte slice into a `Packet`.
-    ///
-    /// Expects a 5-byte header followed by the payload (skips byte 5: delimiter).
-    /// Returns an error if the header is invalid.
-    pub fn parse(protocol: &[u8]) -> Result<Self, ProtocolError> {
-        if protocol.len() < 6 {
-            Logger::error("[PROTOCOL] Not enough bytes for a valid packet");
-            return Err(ProtocolError::InvalidPacketError(
-                "Not enough bytes for a valid packet".to_string(),
-            ));
-        }
-
-        let header = ProtocolHeader::from_bytes(&protocol[..6])?;
-        let payload = protocol[6..].to_owned().into_boxed_slice();
-        return Ok(Self { header, payload });
-    }
-
-    /// Creates a new `Packet` from a message type and payload.
-    ///
-    /// Automatically constructs the header.
-    pub fn new(header_type: MessageType, payload: &[u8]) -> Self {
-        let header = ProtocolHeader::new(header_type, payload);
-        let payload = payload.to_vec().into_boxed_slice();
-        return Self { header, payload };
-    }
-
-    /// Serializes the packet into a byte slice.
-    ///
-    /// Concatenates the header and payload into a single buffer.
-    pub fn wrap_packet(&self) -> Box<[u8]> {
-        let header = self.header.wrap_header();
-        let mut packet = Vec::with_capacity(header.len() + self.payload.len());
-
-        packet.extend_from_slice(&header);
-        packet.extend_from_slice(&self.payload);
-
-        packet.into_boxed_slice()
     }
 }
