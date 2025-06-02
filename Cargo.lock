@@ -1526,6 +1526,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_cbor",
+ "serde_json",
  "thiserror",
  "tokio",
  "uuid",

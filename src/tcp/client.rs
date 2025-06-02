@@ -56,6 +56,8 @@ impl Client {
             missed_packets: Arc::new(RwLock::new(VecDeque::new())),
         };
     }
+    
+    
 
     /// Handles the main lifecycle of a connected client.
     ///

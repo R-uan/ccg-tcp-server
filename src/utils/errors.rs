@@ -82,5 +82,11 @@ pub enum CardRequestError {
     CardNotFound(String),
     
     #[error("{0}")]
-    UnexpectedCardRequestError(String)
+    UnexpectedCardRequestError(String),
+
+    #[error("Failed to get full cards data from API")]
+    FailedToGetFullCardsData,
+
+    #[error("Failed to parse full cards response")]
+    SelectedCardsParseError
 }

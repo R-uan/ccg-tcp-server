@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::models::deck::Card;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct PartialPlayerProfile {
@@ -14,4 +15,14 @@ pub struct AuthenticatedPlayer {
     pub username: String,
     #[serde(alias = "isBanned")]
     pub is_banned: bool
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct SelectedCardsResponse {
+    #[serde(alias = "cards")]
+    pub cards: Vec<Card>,
+    #[serde(alias = "invalidCardGuid")]
+    pub invalid_card_guid: Vec<String>,
+    #[serde(alias = "cardsNotFound")]
+    pub cards_not_found: Vec<String>,
 }

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::time;
+use crate::models::exit_code::ExitCode;
 
 /// The Protocol struct handles the communication protocol for the server, managing client connections and packet processing.
 pub struct Protocol {
@@ -66,7 +67,7 @@ impl Protocol {
         }
     }
 
-    /// Sends a packet to the client, retrying up to 3 times if the send fails.
+    /// Sends a packet to the client, retrying up to 3 times if the sending fails.
     ///
     /// If all attempts fail, it disconnects the client and returns an error.
     ///
@@ -136,7 +137,7 @@ impl Protocol {
         }
     }
 
-    /// Sends a packet to the client and then disconnects the client independent of the send result.
+    /// Sends a packet to the client and then disconnects the client independent of the result.
     ///
     /// # Arguments
     /// * `client` - The client to which the packet should be sent.
@@ -201,9 +202,20 @@ impl Protocol {
                 let client = Arc::new(Client::new(read, write, addr, player, Arc::clone(&self)));
                 let mut players_guard = self.server.players.write().await;
                 players_guard.insert(player_id_clone, Arc::clone(&client));
-                tokio::spawn(async move {
-                    client.connect().await;
+
+                tokio::spawn({
+                    let client_clone = Arc::clone(&client);
+                    async move {
+                        client_clone.connect().await;
+                    }
                 });
+
+                let game_state = self.server.game_state.read().await;
+                let player_guard = client.player.read().await;
+                let player_deck = player_guard.current_deck.cards.clone();
+                if let Err(deck_error) = game_state.fetch_cards_details(player_deck).await {
+                    self.server.close_server(ExitCode::CardRequestFailed, &deck_error.to_string()).await;
+                }
 
                 Ok(())
             }
@@ -253,7 +265,7 @@ impl Protocol {
 
                     let client_clone = Arc::clone(&client);
                     client_clone.reconnect(temp).await;
-                    return Ok(());
+                    Ok(())
                 }
                 Err(_) => Err(PlayerConnectionError::InternalError(
                     "Failed to unwrap temporary client".to_string(),
@@ -282,7 +294,7 @@ impl Protocol {
     /// - Validates that the requesting client matches the internal player representation.
     /// - Confirms it is the requesting player’s turn.
     /// - Verifies the card is present in the player’s hand.
-    /// - Retrieves the full card data (fetching from external source if necessary).
+    /// - Retrieves the full card data (fetching from an external source if necessary).
     /// - Executes the card’s `on_play` triggers via the Lua scripting engine.
     ///
     /// # Arguments
@@ -330,7 +342,7 @@ impl Protocol {
         }
 
         // Verifies if the card played is actually in the player's hand. This does not account for
-        // out of hand plays from special interactions as they do not exist yet.
+        // out-of-hand plays from special interactions as they do not exist yet.
         let player_hand = private_player_view_guard.current_hand.iter();
         let card_view = player_hand
             .flatten()
@@ -344,7 +356,7 @@ impl Protocol {
             })?;
 
         // Verify that the requested card is in the player's current hand.
-        // Retrieve the full card details from game_cards. If not present, fetch from external storage and add it to the shared card list.
+        // Retrieve the full card details from game_cards. If not present, fetch it from external storage and add it to the shared card list.
         let game_cards_lock = game_state.game_cards.read().await;
         let full_card = match game_cards_lock.get(&card_view.id) {
             Some(card) => card,
@@ -386,7 +398,7 @@ impl Protocol {
     /// Sends any missed packets to the client.
     ///
     /// This function retrieves the missed packets from the client's queue and sends them one by one.
-    /// It uses a loop to send each packet, waiting for a short duration between sends to avoid overwhelming the client.
+    /// It uses a loop to send each packet, waiting for a short duration between sending to avoid overwhelming the client.
     ///
     /// # Arguments
     /// * `client` - The client to which the missed packets should be sent.

@@ -4,6 +4,8 @@ use tokio::sync::RwLock;
 use super::player::Player;
 use crate::models::game_action::GameAction;
 use crate::models::{deck::Card, views::PrivatePlayerView};
+use crate::models::deck::CardRef;
+use crate::utils::errors::CardRequestError;
 use crate::utils::logger::Logger;
 
 pub struct GameState {
@@ -33,7 +35,7 @@ impl GameState {
 
     /// Wraps the game state into a byte array for transmission or storage.
     pub fn wrap_game_state(&self) -> Box<[u8]> {
-        return Box::new(b"Pretend this is the wrapped game state".to_owned());
+        Box::new(b"Pretend this is the wrapped game state".to_owned())
     }
 
     /// Adds a player to the game state's hashmap.
@@ -52,8 +54,18 @@ impl GameState {
         self.players.insert(player.id.clone(), player_view_guard);
     }
 
-    /// Fetches the full details of the cards from both player's deck and store it in the game state.
-    pub async fn fetch_cards_details(&mut self, cards: Vec<&str>) {}
+    /// Fetches the full details of the cards from both player decks and store them in the game state.
+    pub async fn fetch_cards_details(&self, cards: Vec<CardRef>) -> Result<(), CardRequestError> {
+        let full_cards = Card::request_cards(&cards).await?;
+        let mut game_cards_lock = self.game_cards.write().await;
+        
+        for card in full_cards {
+            let id_clone = card.id.clone();
+            game_cards_lock.insert(id_clone, card);
+        }
+        
+        Ok(())
+    }
 
     /// Store a card in the game state.
     pub async fn add_card(&self, card: Card) {

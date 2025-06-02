@@ -154,20 +154,17 @@ impl Player {
         let settings = SETTINGS.get().expect("Settings not initialized");
         let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
         let reqwest_client = reqwest::Client::new();
-        return match reqwest_client
+        match reqwest_client
             .get(api_url)
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .send()
             .await
         {
             Ok(response) => match response.status() {
-                StatusCode::OK => {
-                    let result = response
-                        .json::<Deck>()
-                        .await
-                        .map_err(|_| PlayerConnectionError::InvalidDeckFormat);
-                    result
-                }
+                StatusCode::OK => Ok(response
+                    .json::<Deck>()
+                    .await
+                    .map_err(|_| PlayerConnectionError::InvalidDeckFormat)?),
                 StatusCode::NOT_FOUND => Err(PlayerConnectionError::DeckNotFound),
                 _ => {
                     let error_msg = response.text().await.unwrap();
@@ -177,12 +174,12 @@ impl Player {
             },
             Err(e) => {
                 let status = e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                return match status {
+                match status {
                     StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedDeckError),
                     _ => Err(PlayerConnectionError::UnexpectedDeckError),
-                };
+                }
             }
-        };
+        }
     }
 
     /// Fetches the player's profile from the authentication server using the provided token.

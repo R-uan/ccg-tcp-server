@@ -16,6 +16,7 @@ use crate::{
     game::{game_state::GameState, script_manager::ScriptManager},
     utils::logger::Logger,
 };
+use crate::models::exit_code::{ExitCode, ExitStatus};
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
@@ -23,16 +24,13 @@ static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 ///
 /// Manages the TCP listener, game state, Lua scripts, connected players, and packet broadcasting.
 pub struct ServerInstance {
-    /// The TCP listener for accepting incoming client connections.
-    pub socket: TcpListener,
-    /// The current game state, shared across tasks.
-    pub game_state: Arc<RwLock<GameState>>,
-    /// The Lua script manager for handling game logic scripts.
-    pub scripts: Arc<RwLock<ScriptManager>>,
-    /// The transmitter for broadcasting packets to clients.
-    pub transmitter: Arc<Mutex<Sender<Packet>>>,
-    /// A map of connected players, identified by their unique IDs.
-    pub players: Arc<RwLock<HashMap<String, Arc<Client>>>>,
+    pub socket: TcpListener, // The TCP listener for accepting incoming client connections.
+    pub listening: Arc<RwLock<bool>>, // Whether the server listen loop is running.
+    pub exit_status: Arc<RwLock<ExitStatus>>, // The exit status of the server.
+    pub game_state: Arc<RwLock<GameState>>, // The current game state, shared across tasks.
+    pub scripts: Arc<RwLock<ScriptManager>>, // The Lua script manager for handling game logic scripts.
+    pub transmitter: Arc<Mutex<Sender<Packet>>>, // The transmitter for broadcasting packets to clients.
+    pub players: Arc<RwLock<HashMap<String, Arc<Client>>>>, // A map of connected players, identified by their unique IDs.
 }
 
 impl ServerInstance {
@@ -57,19 +55,21 @@ impl ServerInstance {
 
         let game_state = GameState::new_game();
         let (tx, _) = broadcast::channel::<Packet>(10);
-        return match TcpListener::bind((HOST, port)).await {
+        match TcpListener::bind((HOST, port)).await {
             Ok(listener) => {
                 Logger::debug(&format!("[SERVER] Listening on port `{port}`"));
-                return Ok(ServerInstance {
+                Ok(ServerInstance {
                     scripts,
                     socket: listener,
                     transmitter: Arc::new(Mutex::new(tx)),
+                    listening: Arc::new(RwLock::new(true)),
                     game_state: Arc::new(RwLock::new(game_state)),
                     players: Arc::new(RwLock::new(HashMap::new())),
-                });
+                    exit_status: Arc::new(RwLock::new(ExitStatus::default())),
+                })
             }
             Err(error) => Err(error),
-        };
+        }
     }
 
     /// Starts the main server loop and handles incoming client connections.
@@ -88,17 +88,30 @@ impl ServerInstance {
         });
 
         // Main loop to accept and handle incoming client connections.
-        loop {
-            if let Ok((stream, addr)) = self.socket.accept().await {
-                Logger::info(&format!("[CONNECTION] Accepted request from `{addr}`"));
-                let protocol_clone = Arc::clone(&protocol);
-                let temp_client = TemporaryClient::new(stream, addr, protocol_clone).await;
+        while *self.listening.read().await {
+            match self.socket.accept().await {
+                Ok((stream, addr)) => {
+                    Logger::info(&format!("[CONNECTION] Accepted request from `{addr}`"));
+                    let protocol_clone = Arc::clone(&protocol);
 
-                // Spawn a task to handle the temporary client.
-                tokio::spawn(async move {
-                    temp_client.handle_temp_client().await;
-                });
+                    // Spawn a task to handle the temporary client.
+                    tokio::spawn(async move {
+                        let temp_client = TemporaryClient::new(stream, addr, protocol_clone).await;
+                        temp_client.handle_temp_client().await;
+                    });    
+                }
+                Err(error) => {
+                    Logger::error(&format!("[SERVER] Failed to accept client connection: {}", error));
+                }
             }
         }
     }
+    
+    pub async fn close_server(&self, code: ExitCode, reason: &str) {
+        let mut exit_status = self.exit_status.write().await;
+        exit_status.code = code as i32;
+        exit_status.reason = reason.to_string();
+        let mut listening = self.listening.write().await;
+        *listening = false;
+    }   
 }
