@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::models::deck::Card;
+use crate::game::entity::card::Card;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct PartialPlayerProfile {

@@ -1,7 +1,7 @@
 /// A simple checksum utility for validating data integrity using XOR.
-pub struct CheckSum;
+pub struct Checksum;
 
-impl CheckSum {
+impl Checksum {
     /// Computes a 16-bit XOR-based checksum over the given payload.
     ///
     /// # Arguments
@@ -34,7 +34,7 @@ impl CheckSum {
     /// `true` if the provided checksum matches the computed checksum; `false` otherwise.
     pub fn check(checksum: &i16, payload: &[u8]) -> bool {
         // Compute the checksum for the given payload
-        let check = CheckSum::new(payload);
+        let check = Checksum::new(payload);
         // Compare the provided checksum with the computed checksum
         return *checksum == check as i16;
     }
@@ -49,7 +49,7 @@ mod tests {
         let payload: &[u8] = &[];
         let expected: u16 = 0;
         // Verify that the checksum for an empty payload is 0
-        assert_eq!(CheckSum::new(payload), expected);
+        assert_eq!(Checksum::new(payload), expected);
     }
 
     #[test]
@@ -57,7 +57,7 @@ mod tests {
         let payload: &[u8] = &[0xAB];
         let expected: u16 = 0xAB;
         // Verify that the checksum for a single byte matches the byte value
-        assert_eq!(CheckSum::new(payload), expected);
+        assert_eq!(Checksum::new(payload), expected);
     }
 
     #[test]
@@ -66,15 +66,15 @@ mod tests {
         // XOR: 0x01 ^ 0x02 = 0x03, 0x03 ^ 0x03 = 0x00
         let expected: u16 = 0x00;
         // Verify that the checksum for multiple bytes is computed correctly
-        assert_eq!(CheckSum::new(payload), expected);
+        assert_eq!(Checksum::new(payload), expected);
     }
 
     #[test]
     fn test_checksum_check_valid() {
         let payload: &[u8] = &[0x10, 0x20, 0x30];
-        let checksum = CheckSum::new(payload) as i16;
+        let checksum = Checksum::new(payload) as i16;
         // Verify that the checksum validation passes for a valid checksum
-        assert!(CheckSum::check(&checksum, payload));
+        assert!(Checksum::check(&checksum, payload));
     }
 
     #[test]
@@ -82,6 +82,6 @@ mod tests {
         let payload: &[u8] = &[0x10, 0x20, 0x30];
         let bad_checksum: i16 = 0xFF;
         // Verify that the checksum validation fails for an invalid checksum
-        assert!(!CheckSum::check(&bad_checksum, payload));
+        assert!(!Checksum::check(&bad_checksum, payload));
     }
 }

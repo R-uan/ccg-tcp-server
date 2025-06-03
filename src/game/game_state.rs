@@ -1,12 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
-
-use super::player::Player;
+use crate::game::entity::card::{Card, CardRef};
+use crate::game::entity::player::{Player, PrivatePlayerView, PublicPlayerView};
+use crate::logger;
 use crate::models::game_action::GameAction;
-use crate::models::{deck::Card, views::PrivatePlayerView};
-use crate::models::deck::CardRef;
 use crate::utils::errors::CardRequestError;
 use crate::utils::logger::Logger;
+use std::{collections::HashMap, sync::Arc};
+use serde::Serialize;
+use tokio::sync::RwLock;
 
 pub struct GameState {
     pub rounds: u32,
@@ -48,7 +48,7 @@ impl GameState {
         } else if self.red_player.is_empty() {
             self.red_player = player.id.clone();
         } else {
-            Logger::warn("[GAME STATE] Both players are already connected");
+            logger!(WARN, "[GAME STATE] Both players are already connected");
         }
 
         self.players.insert(player.id.clone(), player_view_guard);
@@ -58,12 +58,12 @@ impl GameState {
     pub async fn fetch_cards_details(&self, cards: Vec<CardRef>) -> Result<(), CardRequestError> {
         let full_cards = Card::request_cards(&cards).await?;
         let mut game_cards_lock = self.game_cards.write().await;
-        
+
         for card in full_cards {
             let id_clone = card.id.clone();
             game_cards_lock.insert(id_clone, card);
         }
-        
+
         Ok(())
     }
 
@@ -74,4 +74,18 @@ impl GameState {
     }
 
     pub async fn apply_actions(&self, actions: Vec<GameAction>) {}
+}
+
+#[derive(Serialize, Clone)]
+pub struct PrivateGameStateView {
+    pub turn: u32,
+    pub red_player: PrivatePlayerView,
+    pub blue_player: PrivatePlayerView,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PublicGameStateView {
+    pub turn: u32,
+    pub red_player: PublicPlayerView,
+    pub blue_player: PublicPlayerView,
 }

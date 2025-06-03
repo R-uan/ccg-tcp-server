@@ -1,20 +1,20 @@
 use super::client::{Client, TemporaryClient};
+use crate::game::entity::player::Player;
 use crate::game::lua_context::LuaContext;
 use crate::models::client_requests::PlayCardRequest;
-use crate::models::deck::Card;
+use crate::models::exit_code::ExitCode;
 use crate::tcp::header::HeaderType;
 use crate::tcp::packet::Packet;
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{GameLogicError, NetworkError, PlayerConnectionError};
 use crate::{
-    game::player::Player,
-    utils::{checksum::CheckSum, logger::Logger},
+    logger,
+    utils::{checksum::Checksum, logger::Logger},
 };
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::time;
-use crate::models::exit_code::ExitCode;
 
 /// The Protocol struct handles the communication protocol for the server, managing client connections and packet processing.
 pub struct Protocol {
@@ -44,26 +44,24 @@ impl Protocol {
     ///
     /// Logs all outcomes, including errors and successful packet processing.
     pub async fn handle_incoming(&self, client: Arc<Client>, buffer: &[u8]) {
-        let addr = client.addr.read().await;
-        if let Ok(packet) = Packet::parse(&buffer) {
-            Logger::debug(&format!(
-                "[PROTOCOL] Received packet: {{ type: {}, size: {} }}",
-                packet.header.header_type.to_string(),
-                packet.header.payload_length
-            ));
-            if !CheckSum::check(&packet.header.checksum, &packet.payload) {
-                Logger::error("[PROTOCOL] Invalid checksum value");
-                drop(addr);
-                let packet = Packet::new(HeaderType::InvalidChecksum, b"");
-                self.send_or_disconnect(client, &packet).await;
-                return;
-            } else {
-                Logger::error(&format!("[PROTOCOL] Failed to parse packet from `{addr}`"));
+        match Packet::parse(&buffer) {
+            Err(error) => logger!(ERROR, "{}", error.to_string()),
+            Ok(packet) => {
+                logger!(
+                    DEBUG,
+                    "[PROTOCOL] Received packet: {{ type: {}, size: {} }}",
+                    packet.header.header_type.to_string(),
+                    packet.header.payload_length
+                );
+
+                if !Checksum::check(&packet.header.checksum, &packet.payload) {
+                    logger!(WARN, "[PROTOCOL] Invalid checksum value");
+                    let packet = Packet::new(HeaderType::InvalidChecksum, b"");
+                    self.send_or_disconnect(client, &packet).await;
+                    return;
+                }
+                self.handle_packet(client, &packet).await
             }
-            drop(addr);
-            self.handle_packet(client, &packet).await
-        } else {
-            Logger::info("[PROTOCOL] Unable to parse packet");
         }
     }
 
@@ -120,7 +118,7 @@ impl Protocol {
     /// It does not send any packets to the client; it simply marks the client as disconnected.
     async fn disconnect(&self, client: Arc<Client>) {
         let addr = client.addr.read().await;
-        Logger::info(&format!("[PROTOCOL] Client `{addr}` disconnected"));
+        logger!(INFO, "[PROTOCOL] Client `{addr}` disconnected");
         let mut connected_guard = client.connected.write().await;
         *connected_guard = false;
     }
@@ -165,7 +163,7 @@ impl Protocol {
                 }
             }
             _ => {
-                Logger::warn("[PROTOCOL] Invalid header");
+                logger!(WARN, "[PROTOCOL] Invalid header");
                 let packet = Packet::new(HeaderType::InvalidHeader, b"");
                 self.send_or_disconnect(client, &packet).await;
             }
@@ -190,10 +188,12 @@ impl Protocol {
         packet: &Packet,
     ) -> Result<(), PlayerConnectionError> {
         let player = Player::new_connection(&packet.payload).await?;
-        Logger::info(&format!(
+        logger!(
+            INFO,
             "[PROTOCOL] Client `{}` successfully authenticated as `{}`",
-            &temp_client.addr, &player.username
-        ));
+            &temp_client.addr,
+            &player.username
+        );
         match Arc::try_unwrap(temp_client) {
             Ok(temp) => {
                 let player_id_clone = player.id.clone();
@@ -214,7 +214,9 @@ impl Protocol {
                 let player_guard = client.player.read().await;
                 let player_deck = player_guard.current_deck.cards.clone();
                 if let Err(deck_error) = game_state.fetch_cards_details(player_deck).await {
-                    self.server.close_server(ExitCode::CardRequestFailed, &deck_error.to_string()).await;
+                    self.server
+                        .close_server(ExitCode::CardRequestFailed, &deck_error.to_string())
+                        .await;
                 }
 
                 Ok(())
@@ -244,41 +246,42 @@ impl Protocol {
         temp_client: Arc<TemporaryClient>,
         packet: &Packet,
     ) -> Result<(), PlayerConnectionError> {
-        Logger::info(&format!(
+        logger!(
+            INFO,
             "[PROTOCOL] Reconnection request from `{}`",
             &temp_client.addr
-        ));
+        );
+        
         let authenticated_player = Player::reconnection(&packet.payload).await?;
-        Logger::info(&format!(
+        logger!(
+            INFO,
             "[PROTOCOL] Client `{}` has been authenticated as player `{}`.",
-            &temp_client.addr, &authenticated_player.username
-        ));
-        let players_map = self.server.players.read().await;
+            &temp_client.addr,
+            &authenticated_player.username
+        );
 
+        let players_map = self.server.players.read().await;
         if let Some(client) = players_map.get(&authenticated_player.player_id) {
             match Arc::try_unwrap(temp_client) {
+                Err(_) => Err(PlayerConnectionError::InternalError(
+                    "Unable to unwrap temporary client".to_string(),
+                )),
+                
                 Ok(temp) => {
-                    Logger::info(&format!(
+                    logger!(
+                        INFO,
                         "[PROTOCOL] Attempting to reconnect player `{}`",
                         &client.player.read().await.username
-                    ));
+                    );
 
                     let client_clone = Arc::clone(&client);
                     client_clone.reconnect(temp).await;
+                    
                     Ok(())
                 }
-                Err(_) => Err(PlayerConnectionError::InternalError(
-                    "Failed to unwrap temporary client".to_string(),
-                )),
             }
         } else {
-            Logger::error(&format!(
-                "[PROTOCOL] Player `{}` not connected to this match",
-                &temp_client.addr
-            ));
-            Err(PlayerConnectionError::InternalError(
-                "Player not found in this match".to_string(),
-            ))
+            Err(PlayerConnectionError::PlayerNotConnected)
         }
     }
 

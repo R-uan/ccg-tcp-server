@@ -1,10 +1,9 @@
-use crate::models::views::{CardView, PrivateGameStateView};
 use mlua::LuaSerdeExt;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-use super::game_state::GameState;
+use crate::game::entity::card::CardView;
+use super::game_state::{GameState, PrivateGameStateView};
 
 #[derive(Serialize, Clone)]
 pub struct LuaContext {

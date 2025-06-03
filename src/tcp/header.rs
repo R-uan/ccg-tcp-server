@@ -1,4 +1,4 @@
-use crate::utils::checksum::CheckSum;
+use crate::utils::checksum::Checksum;
 use crate::utils::errors::ProtocolError;
 use std::fmt::Display;
 
@@ -144,7 +144,7 @@ impl Header {
     /// A new `Header` instance with the calculated checksum and payload length.
     pub fn new(header_type: HeaderType, payload: &[u8]) -> Self {
         Self {
-            checksum: CheckSum::new(payload) as i16,
+            checksum: Checksum::new(payload) as i16,
             payload_length: payload.len() as i16,
             header_type,
         }

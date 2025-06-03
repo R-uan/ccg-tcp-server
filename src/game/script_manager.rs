@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::game::lua_context::LuaContext;
+use crate::logger;
 use crate::models::game_action::GameAction;
 use crate::utils::errors::GameLogicError;
 use crate::utils::logger::Logger;
@@ -26,13 +27,13 @@ impl ScriptManager {
     /// Creates a new instance of `ScriptManager` with an initialized Lua VM and empty function maps.
     pub fn new_vm() -> Self {
         let lua = Lua::new();
-        return Self {
+        Self {
             lua: Arc::new(lua),
             core: Mutex::new(HashMap::new()),
             cards: Mutex::new(HashMap::new()),
             effects: Mutex::new(HashMap::new()),
             triggers: Mutex::new(HashMap::new()),
-        };
+        }
     }
 
     /// Loads Lua scripts from the `./scripts` directory into the Lua VM.
@@ -44,13 +45,13 @@ impl ScriptManager {
             if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap();
                 if folders.contains(&name) {
-                    Logger::debug(&format!("[SCRIPTS] Reading from: `{name}` directory"));
+                    logger!(DEBUG, "[SCRIPTS] Reading from: `{name}` directory");
                     let _ = self.load_file(&path);
                 }
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 
     /// Loads individual Lua files from a given directory into the Lua VM.
@@ -62,12 +63,12 @@ impl ScriptManager {
                 let name = path.file_name().unwrap().to_string_lossy().to_string();
                 match fs::read_to_string(&path) {
                     Ok(code) => {
-                        Logger::debug(&format!("[SCRIPTS] Loading script: `{name}`"));
+                        logger!(DEBUG, "[SCRIPTS] Loading script: `{name}`");
                         let _ = self.lua.load(&code).exec();
                     }
                     Err(e) => {
                         let error = e.to_string();
-                        Logger::error(&format!("[SCRIPTS] Couldn't load file `{name}`: {error}"));
+                        logger!(ERROR, "[SCRIPTS] Couldn't load file `{name}`: {error}");
                     }
                 }
             }
@@ -92,36 +93,26 @@ impl ScriptManager {
                         match globals.get::<Function>(func_name.to_owned()) {
                             Ok(function) => {
                                 if file_name.contains("core") {
-                                    Logger::debug(&format!(
-                                        "[CORE] Setting function into map `{func_name}`"
-                                    ));
+                                    logger!(DEBUG, "[SCRIPTS] [CORE] Setting function into map `{func_name}`");
                                     let mut core_guard = self.core.lock().await;
                                     core_guard.insert(func_name, function);
                                 } else if file_name.contains("card") {
-                                    Logger::debug(&format!(
-                                        "[SCRIPTS] [CARDS] Setting function into map `{func_name}`"
-                                    ));
+                                    logger!(DEBUG, "[SCRIPTS] [CARD] Setting function into map `{func_name}`");
                                     let mut card_guard = self.cards.lock().await;
                                     card_guard.insert(func_name, function);
                                 } else if file_name.contains("effect") {
-                                    Logger::debug(&format!(
-                                        "[SCRIPTS] [EFFECTS] Setting function into map `{func_name}`"
-                                    ));
+                                    logger!(DEBUG, "[SCRIPTS] [EFFECT] Setting function into map `{func_name}`");
                                     let mut effects_guard = self.effects.lock().await;
                                     effects_guard.insert(func_name, function);
                                 } else if file_name.contains("trigger") {
-                                    Logger::debug(&format!(
-                                        "[SCRIPTS] [TRIGGERS] Setting function into map `{func_name}`"
-                                    ));
+                                    logger!(DEBUG, "[SCRIPTS] [TRIGGER] Setting function into map `{func_name}`");
                                     let mut triggers_guard = self.triggers.lock().await;
                                     triggers_guard.insert(func_name, function);
                                 }
                             }
                             Err(e) => {
                                 let error = e.to_string();
-                                Logger::error(&format!(
-                                    "[SCRIPTS] Unable to set function `{func_name}` ({error})"
-                                ));
+                                logger!(ERROR, "[SCRIPTS] Unable to set function `{func_name}` ({error})");
                             }
                         }
                     }
@@ -134,17 +125,17 @@ impl ScriptManager {
     /// The action format is expected to be `<category>:<function_name>`.
     pub async fn get_function(&self, action: &str) -> Option<Function> {
         let action_parts: Vec<&str> = action.splitn(2, ":").collect();
-        return match action_parts.as_slice() {
+        match action_parts.as_slice() {
             ["cards", key] => self.cards.lock().await.get(*key).cloned(),
             ["core", key] => self.core.lock().await.get(*key).cloned(),
             ["effects", key] => self.effects.lock().await.get(*key).cloned(),
             ["triggers", key] => self.triggers.lock().await.get(*key).cloned(),
             _ => None,
-        };
+        }
     }
 
     /// Calls a Lua function by its action name and returns a list of `GameAction` results.
-    /// Returns an error if the function is not callable or the result is invalid.
+    /// Returns an error if the function is not callable, or the result is invalid.
     pub async fn call_function(&self, action: &str) -> Result<Vec<GameAction>, GameLogicError> {
         if let Some(function) = self.get_function(action).await {
             let lua_value: Value = function
@@ -157,14 +148,14 @@ impl ScriptManager {
             return Ok(game_actions);
         }
 
-        return Err(GameLogicError::FunctionNotFound(
+        Err(GameLogicError::FunctionNotFound(
             action.to_string(),
             "None".to_string(),
-        ));
+        ))
     }
 
     /// Calls a Lua function with a `LuaContext` and returns a list of `GameAction` results.
-    /// Returns an error if the function is not callable or the result is invalid.
+    /// Returns an error if the function is not callable, or the result is invalid.
     pub async fn call_function_ctx(
         &self,
         action: &str,
@@ -182,10 +173,10 @@ impl ScriptManager {
             return Ok(game_actions);
         }
 
-        return Err(GameLogicError::FunctionNotFound(
+        Err(GameLogicError::FunctionNotFound(
             action.to_string(),
             ctx.actor_id.to_string(),
-        ));
+        ))
     }
 }
 

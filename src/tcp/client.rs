@@ -1,7 +1,7 @@
 use super::protocol::Protocol;
 use crate::tcp::header::HeaderType;
 use crate::tcp::packet::Packet;
-use crate::{game::player::Player, utils::logger::Logger};
+use crate::{logger, utils::logger::Logger};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 use tokio::{
     io::AsyncReadExt,
@@ -11,6 +11,7 @@ use tokio::{
     },
     sync::RwLock,
 };
+use crate::game::entity::player::Player;
 
 /// Represents a connected client in the game server.
 ///
@@ -46,7 +47,7 @@ impl Client {
         player: Player,
         protocol: Arc<Protocol>,
     ) -> Self {
-        return Self {
+        Self {
             protocol,
             addr: Arc::new(RwLock::new(addr)),
             player: Arc::new(RwLock::new(player)),
@@ -54,7 +55,7 @@ impl Client {
             read_stream: Arc::new(RwLock::new(read_stream)),
             write_stream: Arc::new(RwLock::new(write_stream)),
             missed_packets: Arc::new(RwLock::new(VecDeque::new())),
-        };
+        }
     }
     
     
@@ -68,7 +69,7 @@ impl Client {
     /// Exits the loop (and drops the client) if the connection is closed or an error occurs.
     pub async fn connect(self: Arc<Self>) {
         let addr = self.addr.read().await;
-        let mut buffer = [0; 1024];
+        logger!(DEBUG, "[CLIENT] Listening to `{addr}` (Authenticated)");
 
         tokio::spawn({
             let self_clone = Arc::clone(&self);
@@ -76,8 +77,8 @@ impl Client {
                 self_clone.listen_to_game_state().await;
             }
         });
-
-        Logger::info(&format!("[CLIENT] Listening to `{addr}` (Authenticated)"));
+        
+        let mut buffer = [0; 1024];
         while *self.connected.read().await {
             let mut read_stream_guard = self.read_stream.write().await;
             let bytes_read = match read_stream_guard.read(&mut buffer).await {
@@ -86,10 +87,7 @@ impl Client {
                 Err(_) => break,
             };
 
-            Logger::info(&format!("[CLIENT] `{addr}` has sent {bytes_read} bytes"));
-            self.protocol
-                .handle_incoming(Arc::clone(&self), &buffer[..bytes_read])
-                .await;
+            self.protocol.handle_incoming(Arc::clone(&self), &buffer[..bytes_read]).await;
         }
     }
 

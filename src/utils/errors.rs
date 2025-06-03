@@ -3,19 +3,22 @@ pub enum PlayerConnectionError {
     #[error("{0}")]
     InvalidResponseBody(String),
 
-    #[error("Player is banned")]
-    PlayerIsBanned,
+    #[error("`{0}` is banned")]
+    BannedPlayer(String),
 
-    #[error("Invalid player payload: {0}")]
+    #[error("Player connection error: {0}")]
     InvalidPlayerPayload(String),
 
-    #[error("Given player ID does not match with profile")]
-    PlayerDoesNotMatch,
+    #[error("Player's identification does not match with profile")]
+    PlayerDiscrepancy,
+
+    #[error("Player is not connected to the match")]
+    PlayerNotConnected,
 
     #[error("Player token was not authorized")]
     UnauthorizedPlayerError,
 
-    #[error("Unexpected error: {0}")]
+    #[error("Unexpected player error: {0}")]
     UnexpectedPlayerError(String),
 
     #[error("Deck was not found")]
@@ -24,8 +27,8 @@ pub enum PlayerConnectionError {
     #[error("Deck format invalid")]
     InvalidDeckFormat,
 
-    #[error("Unexpected deck error")]
-    UnexpectedDeckError,
+    #[error("Deck error: {0}")]
+    UnexpectedDeckError(String),
 
     #[error("Player does not have permission to access deck")]
     UnauthorizedDeckError,
@@ -78,14 +81,17 @@ pub enum GameLogicError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CardRequestError {
-    #[error("Card `{0}` was not found")]
+    #[error("Card not found: `{0}`")]
     CardNotFound(String),
     
-    #[error("{0}")]
+    #[error("Unexpected card error: {0}")]
     UnexpectedCardRequestError(String),
 
     #[error("Failed to get full cards data from API")]
     FailedToGetFullCardsData,
+    
+    #[error("Failed to get cards data: {0}")]
+    MissingCardData(String),
 
     #[error("Failed to parse full cards response")]
     SelectedCardsParseError
