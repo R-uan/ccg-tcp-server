@@ -1,3 +1,4 @@
+use crate::logger;
 use crate::tcp::header::{Header, HeaderType};
 use crate::utils::errors::ProtocolError;
 use crate::utils::logger::Logger;
@@ -26,7 +27,7 @@ impl Packet {
     /// - `Err(ProtocolError)`: If the byte slice is invalid or the header cannot be parsed.
     pub fn parse(protocol: &[u8]) -> Result<Self, ProtocolError> {
         if protocol.len() < 6 {
-            Logger::error("[PROTOCOL] Not enough bytes for a valid packet");
+            logger!(ERROR, "[PROTOCOL] Not enough bytes for a valid packet");
             return Err(ProtocolError::InvalidPacketError(
                 "Not enough bytes for a valid packet".to_string(),
             ));

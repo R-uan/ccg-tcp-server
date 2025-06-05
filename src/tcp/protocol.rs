@@ -1,5 +1,6 @@
 use super::client::{Client, TemporaryClient};
 use crate::game::entity::player::Player;
+use crate::game::game::GameInstance;
 use crate::game::lua_context::LuaContext;
 use crate::models::client_requests::PlayCardRequest;
 use crate::models::exit_code::ExitCode;
@@ -18,12 +19,16 @@ use tokio::time;
 
 /// The Protocol struct handles the communication protocol for the server, managing client connections and packet processing.
 pub struct Protocol {
-    pub server: Arc<ServerInstance>,
+    pub game_instance: Arc<GameInstance>,
+    pub server_instance: Arc<ServerInstance>,
 }
 
 impl Protocol {
-    pub fn new(server: Arc<ServerInstance>) -> Self {
-        Protocol { server }
+    pub fn new(server_instance: Arc<ServerInstance>, game_instance: Arc<GameInstance>) -> Self {
+        Protocol {
+            game_instance,
+            server_instance,
+        }
     }
 
     /// Handles incoming packets from a client.
@@ -196,7 +201,7 @@ impl Protocol {
                 let addr = temp.addr;
                 let (read, write) = temp.stream.into_split();
                 let client = Arc::new(Client::new(read, write, addr, player, Arc::clone(&self)));
-                let mut players_guard = self.server.players.write().await;
+                let mut players_guard = self.server_instance.players.write().await;
                 players_guard.insert(player_id_clone, Arc::clone(&client));
 
                 tokio::spawn({
@@ -206,11 +211,11 @@ impl Protocol {
                     }
                 });
 
-                let game_state = self.server.game_state.read().await;
+                let game_instance = &self.game_instance;
                 let player_guard = client.player.read().await;
                 let player_deck = player_guard.current_deck.cards.clone();
-                if let Err(deck_error) = game_state.fetch_cards_details(player_deck).await {
-                    self.server
+                if let Err(deck_error) = game_instance.fetch_cards_details(player_deck).await {
+                    self.server_instance
                         .close_server(ExitCode::CardRequestFailed, &deck_error.to_string())
                         .await;
                 }
@@ -256,7 +261,7 @@ impl Protocol {
             &authenticated_player.username
         );
 
-        let players_map = self.server.players.read().await;
+        let players_map = self.server_instance.players.read().await;
         if let Some(client) = players_map.get(&authenticated_player.player_id) {
             match Arc::try_unwrap(temp_client) {
                 Err(_) => Err(PlayerConnectionError::InternalError(
@@ -308,90 +313,7 @@ impl Protocol {
         client: Arc<Client>,
         request: &PlayCardRequest,
     ) -> Result<(), GameLogicError> {
-        let game_state = self.server.game_state.read().await;
-        // Try to fetch the PrivatePlayerView for the given player ID. Return an error if not found.
-        let player_view = game_state.players.get(&request.player_id).ok_or_else(|| {
-            Logger::error(&format!("Player `{}` was not found", &request.player_id));
-            return GameLogicError::PlayerNotFound;
-        })?;
-
-        let private_player_view_clone = Arc::clone(player_view);
-        let private_player_view_guard = private_player_view_clone.read().await;
-
-        // Clone and lock the Client player object to compare identity and access full player data.
-        let player_clone = Arc::clone(&client.player);
-        let player_guard = player_clone.read().await;
-
-        // Ensure that the client attempting the action matches the player in the request.
-        if &player_guard.id != &private_player_view_guard.id {
-            Logger::warn(&format!(
-                "Client's player ID ({}) does not match request's ({})",
-                &player_guard.id, &request.player_id
-            ));
-            return Err(GameLogicError::PlayerIdDoesNotMatch);
-        }
-
-        //Confirm it is currently this player's turn.
-        if &private_player_view_guard.id != &request.player_id {
-            Logger::warn(&format!(
-                "It's not player's turn: {}",
-                &player_guard.username
-            ));
-            return Err(GameLogicError::NotPlayerTurn);
-        }
-
-        // Verifies if the card played is actually in the player's hand. This does not account for
-        // out-of-hand plays from special interactions as they do not exist yet.
-        let player_hand = private_player_view_guard.current_hand.iter();
-        let card_view = player_hand
-            .flatten()
-            .find(|c| c.id == request.card_id)
-            .ok_or_else(|| {
-                Logger::warn(&format!(
-                    "Card player is not in player's ({}) hand",
-                    &player_guard.username
-                ));
-                return GameLogicError::CardPlayedIsNotInHand;
-            })?;
-
-        // Verify that the requested card is in the player's current hand.
-        // Retrieve the full card details from game_cards. If not present, fetch it from external storage and add it to the shared card list.
-        let game_cards_lock = game_state.game_cards.read().await;
-        let full_card = match game_cards_lock.get(&card_view.id) {
-            Some(card) => card,
-            None => {
-                let card = Card::request_card(&card_view.id)
-                    .await
-                    .map_err(|_| GameLogicError::UnableToGetCardDetails)?;
-                game_state.add_card(card).await;
-                game_cards_lock.get(&card_view.id).ok_or_else(|| {
-                    return GameLogicError::UnableToGetCardDetails;
-                })?
-            }
-        };
-
-        // Iterate over the card’s on_play triggers, creating a Lua execution context for each.
-        for action in &full_card.on_play {
-            let lua_context = LuaContext::new(
-                Arc::clone(&self.server.game_state),
-                card_view,
-                None,
-                "on_play".to_string(),
-                action.to_string(),
-            )
-            .await;
-
-            // Execute each script action using the ScriptManager and apply the resulting game actions to the state.
-            let script_manager_clone = Arc::clone(&self.server.scripts);
-            let script_manager_guard = script_manager_clone.read().await;
-            let game_actions = script_manager_guard
-                .call_function_ctx(action, lua_context)
-                .await?;
-
-            game_state.apply_actions(game_actions).await;
-        }
-
-        Ok(())
+        todo!()
     }
 
     /// Sends any missed packets to the client.
@@ -414,24 +336,10 @@ impl Protocol {
                 break;
             }
         }
-        Logger::debug(&format!(
+        logger!(
+            INFO,
             "[PROTOCOL] Sent latest missed packets to {}",
             &client.addr.read().await
-        ));
-    }
-
-    pub async fn cycle_game_state(&self) {
-        let game_state = Arc::clone(&self.server.game_state);
-        let game_state_guard = game_state.read().await;
-
-        let mut interval = time::interval(Duration::from_millis(1000));
-        while *game_state_guard.ongoing.read().await {
-            let game_state_bytes = game_state_guard.wrap_game_state();
-            let transmitter_clone = Arc::clone(&self.server.transmitter);
-            let transmitter_guard = transmitter_clone.lock().await;
-            let game_state_packet = Packet::new(HeaderType::GameState, &game_state_bytes);
-            let _ = transmitter_guard.send(game_state_packet);
-            interval.tick().await;
-        }
+        )
     }
 }

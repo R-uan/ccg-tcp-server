@@ -1,4 +1,5 @@
 use super::protocol::Protocol;
+use crate::game::entity::player::Player;
 use crate::tcp::header::HeaderType;
 use crate::tcp::packet::Packet;
 use crate::{logger, utils::logger::Logger};
@@ -11,7 +12,6 @@ use tokio::{
     },
     sync::RwLock,
 };
-use crate::game::entity::player::Player;
 
 /// Represents a connected client in the game server.
 ///
@@ -57,8 +57,6 @@ impl Client {
             missed_packets: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
-    
-    
 
     /// Handles the main lifecycle of a connected client.
     ///
@@ -77,7 +75,7 @@ impl Client {
                 self_clone.listen_to_game_state().await;
             }
         });
-        
+
         let mut buffer = [0; 1024];
         while *self.connected.read().await {
             let mut read_stream_guard = self.read_stream.write().await;
@@ -87,7 +85,9 @@ impl Client {
                 Err(_) => break,
             };
 
-            self.protocol.handle_incoming(Arc::clone(&self), &buffer[..bytes_read]).await;
+            self.protocol
+                .handle_incoming(Arc::clone(&self), &buffer[..bytes_read])
+                .await;
         }
     }
 
@@ -100,7 +100,7 @@ impl Client {
     /// This function runs in a loop and exits when the receiver is dropped.
     async fn listen_to_game_state(self: Arc<Self>) {
         let protocol_clone = Arc::clone(&self.protocol);
-        let transmitter_clone = Arc::clone(&protocol_clone.server.transmitter);
+        let transmitter_clone = Arc::clone(&protocol_clone.server_instance.transmitter);
         let mut receiver = transmitter_clone.lock().await.subscribe();
         while let Ok(game_state) = receiver.recv().await {
             if !*self.connected.read().await {
@@ -112,10 +112,11 @@ impl Client {
                     missed_packets.pop_front();
                 }
 
-                Logger::warn(&format!(
+                logger!(
+                    WARN,
                     "[CLIENT] `{addr}` has {} game state packets in queue",
                     &missed_packets.len()
-                ));
+                );
 
                 continue;
             }
@@ -178,11 +179,11 @@ impl TemporaryClient {
     /// # Returns
     /// A new `TemporaryClient` instance.
     pub async fn new(stream: TcpStream, addr: SocketAddr, protocol: Arc<Protocol>) -> Self {
-        return TemporaryClient {
+        TemporaryClient {
             addr,
             stream,
             protocol,
-        };
+        }
     }
 
     /// Handles the lifecycle of a temporary client.
@@ -195,9 +196,10 @@ impl TemporaryClient {
     pub async fn handle_temp_client(mut self) {
         let mut buffer = [0; 1024];
         let addr = self.addr.clone();
-        Logger::debug(&format!(
+        logger!(
+            DEBUG,
             "[CLIENT] Listening to temporary client `{addr}` for authentication"
-        ));
+        );
         let bytes = match self.stream.read(&mut buffer).await {
             Ok(0) => return,
             Err(_) => return,
@@ -210,24 +212,20 @@ impl TemporaryClient {
                     let temp_arc = Arc::new(self);
                     let protocol = Arc::clone(&temp_arc.protocol);
                     if let Err(error) = protocol.handle_connect(temp_arc, &packet).await {
-                        Logger::warn(&format!(
-                            "[CLIENT] Could not authenticate `{addr}` ({error})"
-                        ));
+                        logger!(ERROR, "[CLIENT] Could not authenticate `{addr}` ({error})");
                     };
                 } else if packet.header.header_type == HeaderType::Reconnect {
                     let temp_arc = Arc::new(self);
                     let protocol = Arc::clone(&temp_arc.protocol);
                     if let Err(error) = protocol.handle_reconnect(temp_arc, &packet).await {
-                        Logger::warn(&format!(
-                            "[CLIENT] Could not authenticate `{addr}` ({error})"
-                        ));
+                        logger!(ERROR, "[CLIENT] Could not authenticate `{addr}` ({error})");
                     } else {
-                        Logger::info(&format!("[CLIENT] `{addr}` has been reconnected as `todo`"));
+                        logger!(INFO, "[CLIENT] `{addr}` has been reconnected as `todo`")
                     }
                 }
             }
             Err(error) => {
-                Logger::error(&format!("[CLIENT] Invalid packet from `{addr}` ({error})"));
+                logger!(ERROR, "[CLIENT] Invalid packet from `{addr}` ({error})");
                 return;
             }
         }

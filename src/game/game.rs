@@ -1,10 +1,6 @@
-use crate::utils::logger::Logger;
+use crate::game::entity::card::{Card, CardRef};
 use crate::game::entity::player::{Player, PlayerView};
 use crate::game::game_state::GameState;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use crate::game::entity::card::{Card, CardRef};
 use crate::game::lua_context::LuaContext;
 use crate::game::script_manager::ScriptManager;
 use crate::logger;
@@ -12,6 +8,11 @@ use crate::models::client_requests::PlayCardRequest;
 use crate::tcp::client::Client;
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{CardRequestError, GameLogicError};
+use crate::utils::logger::Logger;
+use std::collections::HashMap;
+use std::io::Error;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct GameInstance {
     pub game_state: Arc<RwLock<GameState>>, // The current game state, shared across tasks.
@@ -20,12 +21,33 @@ pub struct GameInstance {
     pub connected_players: Arc<RwLock<HashMap<String, Arc<RwLock<Player>>>>>,
 }
 
+impl GameInstance {
+    pub async fn create_instance() -> Result<Self, Error> {
+        let mut lua_vm = ScriptManager::new_vm();
+        lua_vm.load_scripts()?;
+        lua_vm.set_globals().await;
+        let scripts = Arc::new(RwLock::new(lua_vm));
+
+        Ok(Self {
+            script_manager: scripts,
+            full_cards: Arc::new(RwLock::new(HashMap::new())),
+            game_state: Arc::new(RwLock::new(GameState::new_game())),
+            connected_players: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+}
+
 // Player Actions
 impl GameInstance {
-    pub async fn play_card(self: Arc<Self>, server: Arc<ServerInstance>, client: Arc<Client>, request: &PlayCardRequest) -> Result<(), GameLogicError> {
+    pub async fn play_card(
+        self: Arc<Self>,
+        server: Arc<ServerInstance>,
+        client: Arc<Client>,
+        request: &PlayCardRequest,
+    ) -> Result<(), GameLogicError> {
         let game_state = self.game_state.read().await;
         let player_views = game_state.player_views.read().await;
-        
+
         // Try to fetch the PrivatePlayerView for the given player ID. Return an error if not found.
         let player_view = player_views.get(&request.player_id).ok_or_else(|| {
             return GameLogicError::PlayerNotFound;
@@ -54,7 +76,7 @@ impl GameInstance {
         let card_view = player_hand
             .flatten()
             .find(|c| c.id == request.card_id)
-            .ok_or_else(|| { GameLogicError::CardPlayedIsNotInHand })?;
+            .ok_or_else(|| GameLogicError::CardPlayedIsNotInHand)?;
 
         // Verify that the requested card is in the player's current hand.
         // Retrieve the full card details from game_cards. If not present, fetch it from external storage and add it to the shared card list.
@@ -81,7 +103,7 @@ impl GameInstance {
                 "on_play".to_string(),
                 action.to_string(),
             )
-                .await;
+            .await;
 
             // Execute each script action using the ScriptManager and apply the resulting game actions to the state.
             let script_manager_guard = self.script_manager.read().await;
@@ -123,7 +145,7 @@ impl GameInstance {
         let player_view = PlayerView::from_player(player.clone());
         let player_view_guard = Arc::new(RwLock::new(player_view));
         let mut game_state_guard = self.game_state.write().await;
-        
+
         if game_state_guard.blue_player.is_empty() {
             game_state_guard.blue_player = player.id.clone();
         } else if game_state_guard.red_player.is_empty() {

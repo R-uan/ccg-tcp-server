@@ -18,6 +18,7 @@ use crate::{
     logger,
     utils::logger::Logger,
 };
+use crate::game::game::GameInstance;
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
@@ -27,9 +28,8 @@ static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 pub struct ServerInstance {
     pub socket: TcpListener, // The TCP listener for accepting incoming client connections.
     pub listening: Arc<RwLock<bool>>, // Whether the server listen loop is running.
+    pub game_instance: Arc<GameInstance>,
     pub exit_status: Arc<RwLock<ExitStatus>>, // The exit status of the server.
-    // pub game_state: Arc<RwLock<GameState>>, // The current game state, shared across tasks.
-    // pub scripts: Arc<RwLock<ScriptManager>>, // The Lua script manager for handling game logic scripts.
     pub transmitter: Arc<Mutex<Sender<Packet>>>, // The transmitter for broadcasting packets to clients.
     pub players: Arc<RwLock<HashMap<String, Arc<Client>>>>, // A map of connected players, identified by their unique IDs.
 }
@@ -47,14 +47,7 @@ impl ServerInstance {
     /// - `Ok(ServerInstance)`: If the server is successfully created and bound.
     /// - `Err(Error)`: If the binding fails.
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
-        // Lua scripting START
-        let mut lua_vm = ScriptManager::new_vm();
-        lua_vm.load_scripts()?;
-        lua_vm.set_globals().await;
-        let scripts = Arc::new(RwLock::new(lua_vm));
-        // Lua scripting END
-
-        let game_state = GameState::new_game();
+        let game_instance = GameInstance::create_instance().await?;
         let (tx, _) = broadcast::channel::<Packet>(10);
         match TcpListener::bind((HOST, port)).await {
             Ok(listener) => {
@@ -62,6 +55,7 @@ impl ServerInstance {
                 Ok(ServerInstance {
                     socket: listener,
                     transmitter: Arc::new(Mutex::new(tx)),
+                    game_instance: Arc::new(game_instance),
                     listening: Arc::new(RwLock::new(true)),
                     players: Arc::new(RwLock::new(HashMap::new())),
                     exit_status: Arc::new(RwLock::new(ExitStatus::default())),
@@ -78,13 +72,13 @@ impl ServerInstance {
     ///
     /// Runs indefinitely. Requires `self` as `Arc` for shared access.
     pub async fn listen(self: Arc<Self>) {
-        let protocol = Arc::new(Protocol::new(Arc::clone(&self)));
+        let protocol = Arc::new(Protocol::new(self.clone(), self.game_instance.clone()));
 
         // Spawn a background task to handle game state updates.
-        tokio::spawn({
-            let protocol_clone = Arc::clone(&protocol);
-            async move { protocol_clone.cycle_game_state().await }
-        });
+        // tokio::spawn({
+        //     let protocol_clone = Arc::clone(&protocol);
+        //     async move { protocol_clone.cycle_game_state().await }
+        // });
 
         // Main loop to accept and handle incoming client connections.
         while *self.listening.read().await {
