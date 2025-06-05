@@ -186,10 +186,10 @@ impl Player {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PrivatePlayerView {
+pub struct PlayerView {
     pub id: String,
     pub health: i32,
-    pub mana: u32,
+    pub mana: i32,
 
     pub hand_size: usize,
     pub deck_size: usize,
@@ -200,18 +200,18 @@ pub struct PrivatePlayerView {
     pub graveyard: GraveyardView,
 }
 
-impl PrivatePlayerView {
+impl PlayerView {
     pub fn from_player(player: Arc<Player>) -> Self {
-        PrivatePlayerView {
+        PlayerView {
             id: player.id.clone(),
             health: 30,
             mana: 1,
 
             hand_size: 0,
-            board: BoardView::default(),
-            deck_size: player.current_deck.cards.len(),
-            graveyard: GraveyardView::default(),
             graveyard_size: 0,
+            board: BoardView::default(),
+            graveyard: GraveyardView::default(),
+            deck_size: player.current_deck.cards.len(),
             current_hand: [None, None, None, None, None, None, None, None, None, None],
         }
     }
@@ -221,11 +221,9 @@ impl PrivatePlayerView {
 pub struct PublicPlayerView {
     pub id: String,
     pub health: i32,
-    pub mana: u32,
-
+    pub mana: i32,
     pub hand_size: usize,
     pub deck_size: usize,
     pub graveyard_size: usize,
-
     pub board: BoardView,
 }

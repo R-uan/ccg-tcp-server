@@ -8,7 +8,6 @@ use super::game_state::{GameState, PrivateGameStateView};
 #[derive(Serialize, Clone)]
 pub struct LuaContext {
     pub event: String,
-    pub player_turn: String,
     pub action_name: String,
 
     pub actor_id: String,
@@ -31,45 +30,46 @@ impl LuaContext {
     /// # Returns
     /// A new `LuaContext` instance populated with the provided data and the current game state.
     pub async fn new(
-        gs: Arc<RwLock<GameState>>,
+        game_state: Arc<RwLock<GameState>>,
         actor: &CardView,
         target: Option<CardView>,
         event: String,
         action: String,
     ) -> Self {
-        let game_state_guard = gs.read().await;
-        let keys: Vec<_> = game_state_guard.players.keys().collect();
+        let game_state_guard = game_state.read().await;
+        let player_views_guard = game_state_guard.player_views.read().await;
 
-        let red_player = game_state_guard.players[keys[0]]
+        let keys: Vec<_> = player_views_guard.keys().collect();
+        let red_player = player_views_guard[keys[0]]
             .clone()
             .read()
             .await
             .clone();
-        let blue_player = game_state_guard.players[keys[1]]
+        
+        let blue_player = player_views_guard[keys[1]]
             .clone()
             .read()
             .await
             .clone();
 
-        let game_state = PrivateGameStateView {
+        let private_game_state = PrivateGameStateView {
             red_player,
             blue_player,
             turn: game_state_guard.rounds,
         };
 
-        return LuaContext {
+        LuaContext {
             event,
-            game_state,
+            game_state: private_game_state,
             action_name: action,
             actor_view: actor.clone(),
             actor_id: actor.id.clone(),
-            player_turn: game_state_guard.curr_turn.clone(),
             target_id: match &target {
                 Some(t) => Some(t.id.clone()),
                 None => None,
             },
             target_view: target,
-        };
+        }
     }
 
     /// Converts the `LuaContext` instance into a Lua table.
@@ -81,9 +81,9 @@ impl LuaContext {
     /// A `Result` containing the Lua table representation of the context or an `mlua::Error` if the conversion fails.
     pub fn to_table(&self, lua: Arc<mlua::Lua>) -> Result<mlua::Table, mlua::Error> {
         let context_value = lua.to_value(&self)?;
-        return match context_value.as_table() {
+        match context_value.as_table() {
             Some(table) => Ok(table.to_owned()),
             None => Err(mlua::Error::BindError),
-        };
+        }
     }
 }

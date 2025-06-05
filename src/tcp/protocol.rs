@@ -87,25 +87,21 @@ impl Protocol {
             let packet_data = packet.wrap_packet();
             let mut stream_guard = client.write_stream.write().await;
             if stream_guard.write_all(&packet_data).await.is_err() {
-                Logger::error(&format!(
-                    "[PROTOCOL] Failed to send packet to `{addr}`. Retrying... [{}/3]",
-                    tries + 1
-                ));
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 tries += 1;
                 continue;
             }
 
-            Logger::debug(&format!(
+            logger!(
+                DEBUG,
                 "[PROTOCOL] Sent packet {{ type: {}, size: {} }} to `{addr}`",
                 packet.header.header_type.to_string(),
-                packet_data.len(),
-            ));
+                packet_data.len()
+            );
             return Ok(());
         }
 
-        self.disconnect(client).await;
-        Err(NetworkError::PackageWriteError("unknown error".to_string()))
+        Err(NetworkError::PackageWriteError("Unknown error".to_string()))
     }
 
     /// Disconnects a client by setting its connected state to false and logging the disconnection.
@@ -251,7 +247,7 @@ impl Protocol {
             "[PROTOCOL] Reconnection request from `{}`",
             &temp_client.addr
         );
-        
+
         let authenticated_player = Player::reconnection(&packet.payload).await?;
         logger!(
             INFO,
@@ -266,7 +262,7 @@ impl Protocol {
                 Err(_) => Err(PlayerConnectionError::InternalError(
                     "Unable to unwrap temporary client".to_string(),
                 )),
-                
+
                 Ok(temp) => {
                     logger!(
                         INFO,
@@ -276,7 +272,7 @@ impl Protocol {
 
                     let client_clone = Arc::clone(&client);
                     client_clone.reconnect(temp).await;
-                    
+
                     Ok(())
                 }
             }
