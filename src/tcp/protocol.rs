@@ -15,19 +15,24 @@ use crate::{
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::broadcast::Sender;
+use tokio::sync::{broadcast, Mutex};
 use tokio::time;
 
 /// The Protocol struct handles the communication protocol for the server, managing client connections and packet processing.
 pub struct Protocol {
     pub game_instance: Arc<GameInstance>,
     pub server_instance: Arc<ServerInstance>,
+    pub transmitter: Arc<Mutex<Sender<Packet>>>, // The transmitter for broadcasting packets to clients.
 }
 
 impl Protocol {
     pub fn new(server_instance: Arc<ServerInstance>, game_instance: Arc<GameInstance>) -> Self {
+        let (tx, _) = broadcast::channel::<Packet>(10);
         Protocol {
             game_instance,
             server_instance,
+            transmitter: Arc::new(Mutex::new(tx)),
         }
     }
 

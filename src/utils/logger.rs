@@ -6,7 +6,7 @@ pub struct Logger;
 impl Logger {
     pub fn info(args: Arguments) {
         let local = Local::now().format("%d/%m/%Y %H:%M:%S");
-        println!("[INFO] [{local}] {args}");
+        println!("[INFO ] [{local}] {args}");
     }
 
     pub fn debug(args: Arguments) {
@@ -16,7 +16,7 @@ impl Logger {
 
     pub fn warn(args: Arguments) {
         let local = Local::now().format("%d/%m/%Y %H:%M:%S");
-        eprintln!("[WARN] [{local}] {args}");
+        eprintln!("[WARN ] [{local}] {args}");
     }
 
     pub fn error(args: Arguments) {

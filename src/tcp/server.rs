@@ -30,7 +30,6 @@ pub struct ServerInstance {
     pub listening: Arc<RwLock<bool>>, // Whether the server listen loop is running.
     pub game_instance: Arc<GameInstance>,
     pub exit_status: Arc<RwLock<ExitStatus>>, // The exit status of the server.
-    pub transmitter: Arc<Mutex<Sender<Packet>>>, // The transmitter for broadcasting packets to clients.
     pub players: Arc<RwLock<HashMap<String, Arc<Client>>>>, // A map of connected players, identified by their unique IDs.
 }
 
@@ -48,13 +47,11 @@ impl ServerInstance {
     /// - `Err(Error)`: If the binding fails.
     pub async fn create_instance(port: u16) -> Result<ServerInstance, Error> {
         let game_instance = GameInstance::create_instance().await?;
-        let (tx, _) = broadcast::channel::<Packet>(10);
         match TcpListener::bind((HOST, port)).await {
             Ok(listener) => {
                 logger!(INFO, "[SERVER] Listening on port `{port}`");
                 Ok(ServerInstance {
                     socket: listener,
-                    transmitter: Arc::new(Mutex::new(tx)),
                     game_instance: Arc::new(game_instance),
                     listening: Arc::new(RwLock::new(true)),
                     players: Arc::new(RwLock::new(HashMap::new())),

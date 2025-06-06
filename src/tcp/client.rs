@@ -64,7 +64,7 @@ impl Client {
     /// - Reads data from the client in a loop, parses packets, and handles them.
     /// - Verifies checksums and sends error responses if validation fails.
     ///
-    /// Exits the loop (and drops the client) if the connection is closed or an error occurs.
+    /// Exits the loop (and drops the client) if the connection is closed, or an error occurs.
     pub async fn connect(self: Arc<Self>) {
         let addr = self.addr.read().await;
         logger!(DEBUG, "[CLIENT] Listening to `{addr}` (Authenticated)");
@@ -100,7 +100,7 @@ impl Client {
     /// This function runs in a loop and exits when the receiver is dropped.
     async fn listen_to_game_state(self: Arc<Self>) {
         let protocol_clone = Arc::clone(&self.protocol);
-        let transmitter_clone = Arc::clone(&protocol_clone.server_instance.transmitter);
+        let transmitter_clone = Arc::clone(&protocol_clone.transmitter);
         let mut receiver = transmitter_clone.lock().await.subscribe();
         while let Ok(game_state) = receiver.recv().await {
             if !*self.connected.read().await {
