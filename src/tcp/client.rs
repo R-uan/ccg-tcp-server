@@ -200,33 +200,38 @@ impl TemporaryClient {
             DEBUG,
             "[CLIENT] Listening to temporary client `{addr}` for authentication"
         );
-        let bytes = match self.stream.read(&mut buffer).await {
-            Ok(0) => return,
-            Err(_) => return,
-            Ok(n) => n,
-        };
 
-        match Packet::parse(&buffer[..bytes]) {
-            Ok(packet) => {
-                if packet.header.header_type == HeaderType::Connect {
-                    let temp_arc = Arc::new(self);
-                    let protocol = Arc::clone(&temp_arc.protocol);
-                    if let Err(error) = protocol.handle_connect(temp_arc, &packet).await {
-                        logger!(ERROR, "[CLIENT] Could not authenticate `{addr}` ({error})");
-                    };
-                } else if packet.header.header_type == HeaderType::Reconnect {
-                    let temp_arc = Arc::new(self);
-                    let protocol = Arc::clone(&temp_arc.protocol);
-                    if let Err(error) = protocol.handle_reconnect(temp_arc, &packet).await {
-                        logger!(ERROR, "[CLIENT] Could not authenticate `{addr}` ({error})");
-                    } else {
-                        logger!(INFO, "[CLIENT] `{addr}` has been reconnected as `todo`")
+        loop {
+            let bytes = match self.stream.read(&mut buffer).await {
+                Ok(0) => return,
+                Err(_) => return,
+                Ok(n) => n,
+            };
+
+            match Packet::parse(&buffer[..bytes]) {
+                Ok(packet) => {
+                    if packet.header.header_type == HeaderType::Connect {
+                        let temp_arc = Arc::new(self);
+                        let protocol = Arc::clone(&temp_arc.protocol);
+                        if let Err(error) = protocol.handle_connect(temp_arc, &packet).await {
+                            logger!(ERROR, "[CLIENT] Could not authenticate `{addr}` ({error})");
+                        };
+                        break;
+                    } else if packet.header.header_type == HeaderType::Reconnect {
+                        let temp_arc = Arc::new(self);
+                        let protocol = Arc::clone(&temp_arc.protocol);
+                        if let Err(error) = protocol.handle_reconnect(temp_arc, &packet).await {
+                            logger!(ERROR, "[CLIENT] Could not authenticate `{addr}` ({error})");
+                        } else {
+                            logger!(INFO, "[CLIENT] `{addr}` has been reconnected as `todo`")
+                        }
+                        break;
                     }
                 }
-            }
-            Err(error) => {
-                logger!(ERROR, "[CLIENT] Invalid packet from `{addr}` ({error})");
-                return;
+                Err(error) => {
+                    logger!(ERROR, "[CLIENT] Invalid packet from `{addr}` ({error})");
+                    return;
+                }
             }
         }
     }

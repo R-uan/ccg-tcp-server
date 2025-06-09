@@ -1,23 +1,22 @@
 use super::client::{Client, TemporaryClient};
-use crate::game::entity::player::Player;
+use crate::game::entity::player::{Player, PlayerView};
 use crate::game::game::GameInstance;
-use crate::game::lua_context::LuaContext;
 use crate::models::client_requests::PlayCardRequest;
 use crate::models::exit_code::ExitCode;
 use crate::tcp::header::HeaderType;
 use crate::tcp::packet::Packet;
 use crate::tcp::server::ServerInstance;
-use crate::utils::errors::{GameLogicError, NetworkError, PlayerConnectionError};
+use crate::utils::errors::{NetworkError, PlayerConnectionError};
 use crate::{
     logger,
     utils::{checksum::Checksum, logger::Logger},
 };
-use std::sync::Arc;
+use std::sync::{Arc};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast::Sender;
-use tokio::sync::{broadcast, Mutex};
-use tokio::time;
+use tokio::sync::{broadcast, Mutex, RwLock};
+use crate::tcp::header::HeaderType::PlayCard;
 
 /// The Protocol struct handles the communication protocol for the server, managing client connections and packet processing.
 pub struct Protocol {
@@ -52,7 +51,7 @@ impl Protocol {
     /// * None if the packet is processed successfully.
     /// * Sends an `InvalidChecksum` packet and disconnects the client if the checksum is invalid.
     ///
-    /// Logs all outcomes, including errors and successful packet processing.
+    /// Log all outcomes, including errors and successful packet processing.
     pub async fn handle_incoming(&self, client: Arc<Client>, buffer: &[u8]) {
         match Packet::parse(&buffer) {
             Err(error) => logger!(ERROR, "{}", error.to_string()),
@@ -157,17 +156,7 @@ impl Protocol {
         let message_type = &packet.header.header_type;
         match message_type {
             HeaderType::Disconnect => self.handle_disconnect(client).await,
-            HeaderType::PlayCard => {
-                if let Ok(request) = serde_cbor::from_slice::<PlayCardRequest>(&packet.payload) {
-                    let play_card = self.handle_play_card(client, &request).await;
-                } else {
-                    let invalid_request = Packet::new(
-                        HeaderType::InvalidPacketPayload,
-                        b"Could not parse play card request.",
-                    );
-                    let _ = self.send_packet(client.clone(), &invalid_request).await;
-                }
-            }
+            HeaderType::PlayCard => self.handle_play_card(client, &packet).await,
             _ => {
                 logger!(WARN, "[PROTOCOL] Invalid header");
                 let packet = Packet::new(HeaderType::InvalidHeader, b"");
@@ -207,24 +196,32 @@ impl Protocol {
                 let (read, write) = temp.stream.into_split();
                 let client = Arc::new(Client::new(read, write, addr, player, Arc::clone(&self)));
                 let mut players_guard = self.server_instance.players.write().await;
-                players_guard.insert(player_id_clone, Arc::clone(&client));
+                players_guard.insert(player_id_clone.clone(), Arc::clone(&client));
 
+                let game_instance = &self.game_instance;
+                let player_guard = client.player.read().await;
+                let player_deck = player_guard.current_deck.cards.clone();
+                let player_deck_size = player_deck.len();
+                if let Err(deck_error) = game_instance.fetch_cards_details(player_deck).await {
+                    self.server_instance
+                        .close_server(ExitCode::CardRequestFailed, &deck_error.to_string())
+                        .await;
+                }
+                
+                let mut connected_players_guard = self.game_instance.connected_players.write().await;
+                connected_players_guard.insert(player_id_clone.clone(), client.player.clone());
+                let game_state_guard = self.game_instance.game_state.read().await;
+                let mut game_state_player_view_guard = game_state_guard.player_views.write().await;
+                let player_view = Arc::new(RwLock::new(PlayerView::from_player(&player_id_clone, player_deck_size)));
+                game_state_player_view_guard.insert(player_id_clone.clone(), player_view);
+                
                 tokio::spawn({
                     let client_clone = Arc::clone(&client);
                     async move {
                         client_clone.connect().await;
                     }
                 });
-
-                let game_instance = &self.game_instance;
-                let player_guard = client.player.read().await;
-                let player_deck = player_guard.current_deck.cards.clone();
-                if let Err(deck_error) = game_instance.fetch_cards_details(player_deck).await {
-                    self.server_instance
-                        .close_server(ExitCode::CardRequestFailed, &deck_error.to_string())
-                        .await;
-                }
-
+                
                 Ok(())
             }
             Err(_) => Err(PlayerConnectionError::InternalError(
@@ -313,12 +310,30 @@ impl Protocol {
     /// # Returns
     /// * `Ok(())` if the action is successful.
     /// * `Err(GameLogicError)` if any validation or execution step fails.
-    async fn handle_play_card(
-        &self,
-        client: Arc<Client>,
-        request: &PlayCardRequest,
-    ) -> Result<(), GameLogicError> {
-        todo!()
+    async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {
+        match serde_cbor::from_slice::<PlayCardRequest>(&packet.payload) {
+            Ok(request) => {
+                if let Err(error) = self
+                    .game_instance
+                    .clone()
+                    .play_card(client.clone(), &request)
+                    .await
+                {
+                    let error_message = error.to_string();
+                    logger!(ERROR, "Play Card Request: {}", error_message.clone());
+                    let error_packet = Packet::new(HeaderType::PlayCard, error_message.as_bytes());
+                    let _ = self.send_packet(client, &error_packet).await;
+                } else {
+                    logger!(INFO, "Play card request was finished successfully");
+                }
+            }
+            Err(error) => {
+                let error_message = error.to_string();
+                logger!(ERROR, "[PROTOCOL] Play card request: {}", error_message.clone());
+                let error_packet = Packet::new(HeaderType::PlayCard, error_message.as_bytes());
+                let _ = self.send_packet(client, &error_packet).await;
+            }
+        }
     }
 
     /// Sends any missed packets to the client.

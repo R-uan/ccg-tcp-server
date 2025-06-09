@@ -201,17 +201,17 @@ pub struct PlayerView {
 }
 
 impl PlayerView {
-    pub fn from_player(player: Arc<Player>) -> Self {
+    pub fn from_player(player_id: &str, deck_size: usize) -> Self {
         PlayerView {
-            id: player.id.clone(),
+            id: player_id.to_string(),
             health: 30,
             mana: 1,
 
+            deck_size,
             hand_size: 0,
             graveyard_size: 0,
             board: BoardView::default(),
             graveyard: GraveyardView::default(),
-            deck_size: player.current_deck.cards.len(),
             current_hand: [None, None, None, None, None, None, None, None, None, None],
         }
     }

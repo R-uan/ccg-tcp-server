@@ -15,7 +15,7 @@ pub struct ReconnectionRequest {
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct PlayCardRequest {
-    pub player_id: String,
+    pub actor_id: String,
     pub card_id: String,
     pub target_id: Option<String>,
     pub target_position: Option<String>,

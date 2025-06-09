@@ -1,12 +1,11 @@
 use crate::game::entity::card::{Card, CardRef};
-use crate::game::entity::player::{Player, PlayerView};
+use crate::game::entity::player::Player;
 use crate::game::game_state::GameState;
 use crate::game::lua_context::LuaContext;
 use crate::game::script_manager::ScriptManager;
 use crate::logger;
 use crate::models::client_requests::PlayCardRequest;
 use crate::tcp::client::Client;
-use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{CardRequestError, GameLogicError};
 use crate::utils::logger::Logger;
 use std::collections::HashMap;
@@ -41,32 +40,33 @@ impl GameInstance {
 impl GameInstance {
     pub async fn play_card(
         self: Arc<Self>,
-        server: Arc<ServerInstance>,
         client: Arc<Client>,
         request: &PlayCardRequest,
     ) -> Result<(), GameLogicError> {
         let game_state = self.game_state.read().await;
         let player_views = game_state.player_views.read().await;
+        
+        // Clone and lock the Client player object to compare identity and access full player data.
+        let player_clone = Arc::clone(&client.player);
+        let player_guard = player_clone.read().await;
 
         // Try to fetch the PrivatePlayerView for the given player ID. Return an error if not found.
-        let player_view = player_views.get(&request.player_id).ok_or_else(|| {
+        let player_view = player_views.get(&request.actor_id).ok_or_else(|| {
+            logger!(DEBUG, "[PLAY CARD] Play card actor: {}", &request.actor_id);
+            logger!(DEBUG, "[PLAY CARD] Play card client: {}", &player_guard.id);
             return GameLogicError::PlayerNotFound;
         })?;
 
         let player_view_clone = Arc::clone(player_view);
         let player_view_guard = player_view_clone.read().await;
-
-        // Clone and lock the Client player object to compare identity and access full player data.
-        let player_clone = Arc::clone(&client.player);
-        let player_guard = player_clone.read().await;
-
+        
         // Ensure that the client attempting the action matches the player in the request.
         if &player_guard.id != &player_view_guard.id {
             return Err(GameLogicError::PlayerIdDoesNotMatch);
         }
 
         //Confirm it is currently this player's turn.
-        if &player_view_guard.id != &request.player_id {
+        if &player_view_guard.id != &request.actor_id {
             return Err(GameLogicError::NotPlayerTurn);
         }
 
@@ -141,21 +141,21 @@ impl GameInstance {
 
 // Player implementations
 impl GameInstance {
-    pub async fn add_player(&mut self, player: Arc<Player>) {
-        let player_view = PlayerView::from_player(player.clone());
-        let player_view_guard = Arc::new(RwLock::new(player_view));
-        let mut game_state_guard = self.game_state.write().await;
-
-        if game_state_guard.blue_player.is_empty() {
-            game_state_guard.blue_player = player.id.clone();
-        } else if game_state_guard.red_player.is_empty() {
-            game_state_guard.red_player = player.id.clone();
-        } else {
-            logger!(WARN, "[GAME STATE] Both players are already connected");
-            return;
-        }
-
-        let mut player_views_guard = game_state_guard.player_views.write().await;
-        player_views_guard.insert(player.id.clone(), player_view_guard);
-    }
+    // pub async fn add_player(&mut self, player: Arc<Player>) {
+    //     let player_view = PlayerView::from_player(player.clone());
+    //     let player_view_guard = Arc::new(RwLock::new(player_view));
+    //     let mut game_state_guard = self.game_state.write().await;
+    // 
+    //     if game_state_guard.blue_player.is_empty() {
+    //         game_state_guard.blue_player = player.id.clone();
+    //     } else if game_state_guard.red_player.is_empty() {
+    //         game_state_guard.red_player = player.id.clone();
+    //     } else {
+    //         logger!(WARN, "[GAME STATE] Both players are already connected");
+    //         return;
+    //     }
+    // 
+    //     let mut player_views_guard = game_state_guard.player_views.write().await;
+    //     player_views_guard.insert(player.id.clone(), player_view_guard);
+    // }
 }
