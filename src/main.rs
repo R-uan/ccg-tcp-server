@@ -31,12 +31,10 @@ async fn main() -> Result<(), Error> {
     
     if let Ok(uninitialized) = UninitializedServer::create_instance(port).await {
         let server_arc = Arc::new(uninitialized);
-        Arc::clone(&server_arc).await_for_initialization().await;
-    }
-    
-    if let Ok(server) = ServerInstance::create_instance(port).await {
-        let server_arc = Arc::new(server);
-        Arc::clone(&server_arc).listen().await;
+        if let Ok(initialized_server) = Arc::clone(&server_arc).await_for_initialization().await {
+            let initialized_clone = Arc::new(initialized_server);
+            initialized_clone.listen().await;
+        }
     }
 
     Ok(())

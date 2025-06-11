@@ -102,3 +102,18 @@ pub enum GameInstanceError {
     #[error("Placeholder error, make a specific one")]
     PlaceHolderError
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServerInstanceError {
+    #[error("Placeholder error, make a specific one")]
+    PlaceHolderError,
+    
+    #[error("Placeholder error, make a specific one")]
+    AlreadyInitialized,
+    
+    #[error("Failed to create Game Instance: {0}")]
+    GameInstanceFail(String),
+    
+    #[error("Unable to unwrap UninitializedServer")]
+    UnwrapFailed
+}
