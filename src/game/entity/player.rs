@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use crate::models::client_requests::ReconnectionRequest;
-use crate::models::http_response::AuthenticatedPlayer;
-use crate::{logger, models::{client_requests::ConnectionRequest, http_response::PartialPlayerProfile}, utils::{errors::PlayerConnectionError, logger::Logger}, SETTINGS};
+use crate::models::http_response::{AuthenticatedPlayer, PreloadedPlayer};
+use crate::{logger, models::{http_response::PartialPlayerProfile}, utils::{errors::PlayerConnectionError, logger::Logger}, SETTINGS};
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::{Deserialize, Serialize};
-use crate::game::entity::deck::Deck;
+use tokio::sync::RwLock;
+use crate::game::entity::deck::{Deck, DeckView};
 use crate::game::entity::board::{BoardView, GraveyardView};
-use crate::game::entity::card::CardView;
+use crate::game::entity::card::{CardRef, CardView};
 
 /// Represents a player in the game, including their profile, deck, and authentication details.
 #[derive(Serialize, Deserialize)]
@@ -15,38 +16,63 @@ pub struct Player {
     pub level: u32,
     pub username: String,
     pub current_deck: Deck,
-    pub player_token: String,
+    pub deck_view: DeckView,
     pub current_deck_id: String,
 }
 
 impl Player {
-    /// Creates a new player connection by deserializing the payload and fetching the player's profile and deck.
-    ///
-    /// # Arguments
-    /// * `payload` - A byte slice containing the serialized connection request.
-    ///
-    /// # Returns
-    /// * `Ok(Player)` - The newly created player instance.
-    /// * `Err(PlayerConnectionError)` - An error if the payload is invalid or the profile/deck fetch fails.
-    pub async fn new_connection(payload: &[u8]) -> Result<Self, PlayerConnectionError> {
-        match serde_cbor::from_slice::<ConnectionRequest>(payload) {
-            Err(error) => Err(PlayerConnectionError::InvalidPlayerPayload(error.to_string())),
-            Ok(request) => {
-                let player_profile = Player::get_player_profile(&request.auth_token).await?;
-                logger!(INFO, "Fetched `{}`'s profile", &player_profile.username);
-                
-                let player_deck = Player::get_player_deck(&request.current_deck_id, &request.auth_token).await?;
-                logger!(INFO, "Fetched `{}` cards from `{}`'s deck", player_deck.cards.len(), &player_profile.username);
-                
-                Ok(Player {
-                    id: request.player_id,
-                    current_deck: player_deck,
-                    level: player_profile.level,
-                    player_token: request.auth_token,
-                    username: player_profile.username,
-                    current_deck_id: request.current_deck_id,
-                })
+    pub async fn preload_player(profile: PreloadedPlayer, deck: Deck, deck_view: DeckView) -> Self {
+        Player {
+            deck_view,
+            id: profile.id,
+            level: profile.level,
+            username: profile.username,
+            current_deck_id: deck.id.clone(),
+            current_deck:deck,
+        }
+    }
+
+    pub async fn preload_player_profile(player_id: &str) -> Result<PreloadedPlayer, PlayerConnectionError> {
+        let settings = SETTINGS.get().expect("Settings not initialized");
+        let api_url = format!("{}/api/player/preload/{player_id}", settings.auth_server);
+        let reqwest_client = reqwest::Client::new();
+
+        match reqwest_client.get(api_url).send().await {
+            Ok(response) => {
+                Ok(response.json::<PreloadedPlayer>().await.map_err(|e| {
+                    PlayerConnectionError::InvalidPlayerPayload(e.to_string())
+                })?)
             }
+            Err(error) => Err(PlayerConnectionError::UnexpectedDeckError(error.to_string()))?
+        }
+    }
+
+    pub async fn preload_player_deck(deck_id: &str) -> Result<Deck, PlayerConnectionError> {
+        let settings = SETTINGS.get().expect("Settings not initialized");
+        let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
+        let reqwest_client = reqwest::Client::new();
+
+        match reqwest_client.get(api_url).send().await {
+            Err(e) => Err(PlayerConnectionError::UnexpectedDeckError(e.to_string())),
+            Ok(response) => match response.status() {
+                StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedDeckError),
+
+                StatusCode::NOT_FOUND => Err(PlayerConnectionError::DeckNotFound),
+
+                StatusCode::OK => {
+                    let deck = response
+                        .json::<Deck>()
+                        .await
+                        .map_err(|_| PlayerConnectionError::InvalidDeckFormat)?;
+
+                    Ok(deck)
+                }
+
+                _ => {
+                    let error_msg = response.text().await.unwrap_or("NO MESSAGE".to_string());
+                    Err(PlayerConnectionError::UnexpectedDeckError(error_msg))
+                }
+            },
         }
     }
 
@@ -66,7 +92,7 @@ impl Player {
                 if player_profile.player_id != request.player_id {
                     return Err(PlayerConnectionError::PlayerDiscrepancy);
                 }
-                
+
                 Ok(player_profile)
             }
         }
@@ -84,12 +110,12 @@ impl Player {
         let settings = SETTINGS.get().expect("Settings not initialized");
         let api_url = format!("{}/api/auth/verify", settings.auth_server);
         let reqwest_client = reqwest::Client::new();
-        
+
         match reqwest_client
             .get(api_url)
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .send()
-            .await 
+            .await
         {
             Err(error) => Err(PlayerConnectionError::UnexpectedPlayerError(error.to_string())),
             Ok(response) => match response.status() {
@@ -114,44 +140,6 @@ impl Player {
         }
     }
 
-    /// Fetches the player's deck from the deck server using the provided deck ID and authentication token.
-    ///
-    /// # Arguments
-    /// * `deck_id` - The ID of the deck to fetch.
-    /// * `token` - The authentication token for the request.
-    ///
-    /// # Returns
-    /// * `Ok(Deck)` - The player's deck.
-    /// * `Err(PlayerConnectionError)` - An error if the deck is not found or the server response is invalid.
-    async fn get_player_deck(deck_id: &str, token: &str) -> Result<Deck, PlayerConnectionError> {
-        let settings = SETTINGS.get().expect("Settings not initialized");
-        let api_url = format!("{}/api/deck/{}", settings.deck_server, deck_id);
-        let reqwest_client = reqwest::Client::new();
-        match reqwest_client
-            .get(api_url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .send()
-            .await
-        {
-            Err(e) => Err(PlayerConnectionError::UnexpectedDeckError(e.to_string())),
-            Ok(response) => match response.status() {
-                StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedDeckError),
-                
-                StatusCode::NOT_FOUND => Err(PlayerConnectionError::DeckNotFound),
-                
-                StatusCode::OK => Ok(response
-                    .json::<Deck>()
-                    .await
-                    .map_err(|_| PlayerConnectionError::InvalidDeckFormat)?),
-                
-                _ => {
-                    let error_msg = response.text().await.unwrap_or("NO MESSAGE".to_string());
-                    Err(PlayerConnectionError::UnexpectedDeckError(error_msg))
-                }
-            },
-        }
-    }
-
     /// Fetches the player's profile from the authentication server using the provided token.
     ///
     /// # Arguments
@@ -171,7 +159,7 @@ impl Player {
             .await
         {
             Err(e) => Err(PlayerConnectionError::UnexpectedDeckError(e.to_string())),
-            Ok(response) => match response.status()  {
+            Ok(response) => match response.status() {
                 StatusCode::UNAUTHORIZED => Err(PlayerConnectionError::UnauthorizedPlayerError),
                 StatusCode::OK => response.json::<PartialPlayerProfile>().await.map_err(|e| {
                     PlayerConnectionError::InvalidPlayerPayload(e.to_string())
@@ -188,8 +176,8 @@ impl Player {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PlayerView {
     pub id: String,
-    pub health: i32,
     pub mana: i32,
+    pub health: i32,
 
     pub hand_size: usize,
     pub deck_size: usize,
@@ -201,17 +189,17 @@ pub struct PlayerView {
 }
 
 impl PlayerView {
-    pub fn from_player(player_id: &str, deck_size: usize) -> Self {
+    pub fn from_player(player: &Player) -> Self {
         PlayerView {
-            id: player_id.to_string(),
-            health: 30,
             mana: 1,
+            health: 30,
+            id: player.id.clone(),
 
-            deck_size,
             hand_size: 0,
             graveyard_size: 0,
             board: BoardView::default(),
             graveyard: GraveyardView::default(),
+            deck_size: player.current_deck.cards.len(),
             current_hand: [None, None, None, None, None, None, None, None, None, None],
         }
     }

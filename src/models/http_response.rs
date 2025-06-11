@@ -9,6 +9,13 @@ pub struct PartialPlayerProfile {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
+pub struct PreloadedPlayer {
+    pub id: String,
+    pub level: u32,
+    pub username: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct AuthenticatedPlayer {
     #[serde(alias = "playerId")]
     pub player_id: String,

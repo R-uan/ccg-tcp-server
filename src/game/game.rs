@@ -1,15 +1,15 @@
-use crate::game::entity::card::{Card, CardRef};
-use crate::game::entity::player::Player;
+use crate::game::entity::card::{Card, CardView};
+use crate::game::entity::player::{Player, PlayerView};
 use crate::game::game_state::GameState;
 use crate::game::lua_context::LuaContext;
 use crate::game::script_manager::ScriptManager;
 use crate::logger;
 use crate::models::client_requests::PlayCardRequest;
+use crate::models::init_server::PreloadPlayer;
 use crate::tcp::client::Client;
-use crate::utils::errors::{CardRequestError, GameLogicError};
+use crate::utils::errors::{GameInstanceError, GameLogicError};
 use crate::utils::logger::Logger;
 use std::collections::HashMap;
-use std::io::Error;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -21,17 +21,47 @@ pub struct GameInstance {
 }
 
 impl GameInstance {
-    pub async fn create_instance() -> Result<Self, Error> {
+    pub async fn create_instance(players: Vec<PreloadPlayer>) -> Result<Self, GameInstanceError> {
         let mut lua_vm = ScriptManager::new_vm();
-        lua_vm.load_scripts()?;
+        lua_vm.load_scripts().map_err(|e| GameInstanceError::PlaceHolderError)?;
         lua_vm.set_globals().await;
         let scripts = Arc::new(RwLock::new(lua_vm));
+        //
+
+        let mut full_cards_map: HashMap<String, Card> = HashMap::new();
+        let mut connected_players: HashMap<String, Arc<RwLock<Player>>> = HashMap::new();
+        let mut connect_players_views: HashMap<String, Arc<RwLock<PlayerView>>> = HashMap::new();
+
+        for player in &players {
+            let player_profile = Player::preload_player_profile(&player.id)
+                .await
+                .map_err(|e| GameInstanceError::PlaceHolderError)?;
+
+            let player_deck = Player::preload_player_deck(&player.deck_id)
+                .await
+                .map_err(|e| GameInstanceError::PlaceHolderError)?;
+
+            let full_cards = Card::request_cards(&player_deck.cards)
+                .await
+                .map_err(|e| GameInstanceError::PlaceHolderError)?;
+
+            for card in full_cards {
+                full_cards_map.insert(card.id.clone(), card);
+            }
+
+            let deck_view = player_deck.create_view(&full_cards_map, &player_profile.id);
+            let player = Player::preload_player(player_profile, player_deck, deck_view).await;
+            let player_view = PlayerView::from_player(&player);
+            
+            connect_players_views.insert(player.id.clone(), Arc::new(RwLock::new(player_view)));
+            connected_players.insert(player.id.clone(), Arc::new(RwLock::new(player)));
+        }
 
         Ok(Self {
             script_manager: scripts,
-            full_cards: Arc::new(RwLock::new(HashMap::new())),
-            game_state: Arc::new(RwLock::new(GameState::new_game())),
-            connected_players: Arc::new(RwLock::new(HashMap::new())),
+            full_cards: Arc::new(RwLock::new(full_cards_map)),
+            connected_players: Arc::new(RwLock::new(connected_players)),
+            game_state: Arc::new(RwLock::new(GameState::new_game(connect_players_views))),
         })
     }
 }
@@ -45,7 +75,7 @@ impl GameInstance {
     ) -> Result<(), GameLogicError> {
         let game_state = self.game_state.read().await;
         let player_views = game_state.player_views.read().await;
-        
+
         // Clone and lock the Client player object to compare identity and access full player data.
         let player_clone = Arc::clone(&client.player);
         let player_guard = player_clone.read().await;
@@ -59,7 +89,7 @@ impl GameInstance {
 
         let player_view_clone = Arc::clone(player_view);
         let player_view_guard = player_view_clone.read().await;
-        
+
         // Ensure that the client attempting the action matches the player in the request.
         if &player_guard.id != &player_view_guard.id {
             return Err(GameLogicError::PlayerIdDoesNotMatch);
@@ -120,18 +150,6 @@ impl GameInstance {
 
 // Card implementations
 impl GameInstance {
-    pub async fn fetch_cards_details(&self, cards: Vec<CardRef>) -> Result<(), CardRequestError> {
-        let full_cards = Card::request_cards(&cards).await?;
-        let mut game_cards_lock = self.full_cards.write().await;
-
-        for card in full_cards {
-            let id_clone = card.id.clone();
-            game_cards_lock.insert(id_clone, card);
-        }
-
-        Ok(())
-    }
-
     /// Store a card in the game state.
     pub async fn add_card(&self, card: Card) {
         let mut card_vec = self.full_cards.write().await;
@@ -145,7 +163,7 @@ impl GameInstance {
     //     let player_view = PlayerView::from_player(player.clone());
     //     let player_view_guard = Arc::new(RwLock::new(player_view));
     //     let mut game_state_guard = self.game_state.write().await;
-    // 
+    //
     //     if game_state_guard.blue_player.is_empty() {
     //         game_state_guard.blue_player = player.id.clone();
     //     } else if game_state_guard.red_player.is_empty() {
@@ -154,7 +172,7 @@ impl GameInstance {
     //         logger!(WARN, "[GAME STATE] Both players are already connected");
     //         return;
     //     }
-    // 
+    //
     //     let mut player_views_guard = game_state_guard.player_views.write().await;
     //     player_views_guard.insert(player.id.clone(), player_view_guard);
     // }

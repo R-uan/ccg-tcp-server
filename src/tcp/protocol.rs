@@ -195,13 +195,12 @@ impl Protocol {
                 let addr = temp.addr;
                 let (read, write) = temp.stream.into_split();
                 let client = Arc::new(Client::new(read, write, addr, player, Arc::clone(&self)));
-                let mut players_guard = self.server_instance.players.write().await;
-                players_guard.insert(player_id_clone.clone(), Arc::clone(&client));
+                let mut connected_clients_guard = self.server_instance.connected_clients.write().await;
+                connected_clients_guard.insert(player_id_clone.clone(), Arc::clone(&client));
 
                 let game_instance = &self.game_instance;
                 let player_guard = client.player.read().await;
                 let player_deck = player_guard.current_deck.cards.clone();
-                let player_deck_size = player_deck.len();
                 if let Err(deck_error) = game_instance.fetch_cards_details(player_deck).await {
                     self.server_instance
                         .close_server(ExitCode::CardRequestFailed, &deck_error.to_string())
@@ -212,7 +211,7 @@ impl Protocol {
                 connected_players_guard.insert(player_id_clone.clone(), client.player.clone());
                 let game_state_guard = self.game_instance.game_state.read().await;
                 let mut game_state_player_view_guard = game_state_guard.player_views.write().await;
-                let player_view = Arc::new(RwLock::new(PlayerView::from_player(&player_id_clone, player_deck_size)));
+                let player_view = Arc::new(RwLock::new(PlayerView::from_player(client.player.clone()).await));
                 game_state_player_view_guard.insert(player_id_clone.clone(), player_view);
                 
                 tokio::spawn({
@@ -263,7 +262,7 @@ impl Protocol {
             &authenticated_player.username
         );
 
-        let players_map = self.server_instance.players.read().await;
+        let players_map = self.server_instance.connected_clients.read().await;
         if let Some(client) = players_map.get(&authenticated_player.player_id) {
             match Arc::try_unwrap(temp_client) {
                 Err(_) => Err(PlayerConnectionError::InternalError(
@@ -311,6 +310,7 @@ impl Protocol {
     /// * `Ok(())` if the action is successful.
     /// * `Err(GameLogicError)` if any validation or execution step fails.
     async fn handle_play_card(&self, client: Arc<Client>, packet: &Packet) {
+        logger!(DEBUG, "Handle play card ended");
         match serde_cbor::from_slice::<PlayCardRequest>(&packet.payload) {
             Ok(request) => {
                 if let Err(error) = self
@@ -334,6 +334,7 @@ impl Protocol {
                 let _ = self.send_packet(client, &error_packet).await;
             }
         }
+
     }
 
     /// Sends any missed packets to the client.

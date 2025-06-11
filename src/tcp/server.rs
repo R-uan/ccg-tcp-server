@@ -1,19 +1,17 @@
-use std::collections::HashMap;
-use std::{io::Error, net::Ipv4Addr, sync::Arc};
-use tokio::{
-    net::TcpListener,
-    sync::RwLock,
-};
-
 use super::client::Client;
 use crate::game::game::GameInstance;
 use crate::models::exit_code::{ExitCode, ExitStatus};
 use crate::tcp::client::TemporaryClient;
 use crate::tcp::protocol::Protocol;
-use crate::{
-    logger,
-    utils::logger::Logger,
-};
+use crate::{logger, utils::logger::Logger, SERVER_INSTANCE};
+use std::collections::HashMap;
+use std::{io::Error, net::Ipv4Addr, sync::Arc};
+use tokio::net::TcpStream;
+use tokio::{net::TcpListener, sync::RwLock};
+use tokio::io::AsyncReadExt;
+use crate::models::init_server::InitServerRequest;
+use crate::tcp::header::HeaderType;
+use crate::tcp::packet::Packet;
 
 static HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
@@ -25,7 +23,7 @@ pub struct ServerInstance {
     pub listening: Arc<RwLock<bool>>, // Whether the server listen loop is running.
     pub game_instance: Arc<GameInstance>,
     pub exit_status: Arc<RwLock<ExitStatus>>, // The exit status of the server.
-    pub players: Arc<RwLock<HashMap<String, Arc<Client>>>>, // A map of connected players, identified by their unique IDs.
+    pub connected_clients: Arc<RwLock<HashMap<String, Arc<Client>>>>, // A map of connected players, identified by their unique IDs.
 }
 
 impl ServerInstance {
@@ -49,7 +47,7 @@ impl ServerInstance {
                     socket: listener,
                     game_instance: Arc::new(game_instance),
                     listening: Arc::new(RwLock::new(true)),
-                    players: Arc::new(RwLock::new(HashMap::new())),
+                    connected_clients: Arc::new(RwLock::new(HashMap::new())),
                     exit_status: Arc::new(RwLock::new(ExitStatus::default())),
                 })
             }
@@ -57,6 +55,19 @@ impl ServerInstance {
         }
     }
 
+    pub async fn initialize_server(uninitialized: Arc<UninitializedServer>, request: InitServerRequest) -> Result<ServerInstance, Error> {
+        match SERVER_INSTANCE.initialized() {
+            true => {
+                
+            }
+            false => {
+                if let Ok(server) = Arc::try_unwrap(uninitialized) {
+                    
+                }
+            }
+        }
+    }
+    
     /// Starts the main server loop and handles incoming client connections.
     ///
     /// - Spawns a background task to broadcast game state updates.
@@ -96,5 +107,64 @@ impl ServerInstance {
         exit_status.reason = reason.to_string();
         let mut listening = self.listening.write().await;
         *listening = false;
+    }
+}
+
+pub struct UninitializedServer {
+    pub socket: TcpListener,
+    pub listening: Arc<RwLock<bool>>,
+}
+
+impl UninitializedServer {
+    pub async fn create_instance(port: u16) -> Result<Self, Error> {
+        match TcpListener::bind((HOST, port)).await {
+            Ok(listener) => {
+                logger!(INFO, "[SERVER] Listening on port `{port}`");
+                Ok(Self {
+                    socket: listener,
+                    listening: Arc::new(RwLock::new(false))
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+    
+    pub async fn await_for_initialization(self: Arc<Self>) {
+        while *self.listening.read().await {
+            match self.socket.accept().await {
+                Err(error) => logger!(INFO, "[SERVER] Failed to accept client connection: {error}"),
+                Ok((stream, addr)) => {
+                    let me = self.clone();
+                    tokio::spawn(async move {
+                        me.listen_to_connection(stream).await;
+                    });
+                }
+            }
+        }
+    }
+
+    pub async fn listen_to_connection(self: Arc<Self>, mut stream: TcpStream) {
+        let mut buffer = [0; 1024];
+        while *self.listening.read().await {
+            let read_bytes = match stream.read(&mut buffer).await {
+                Ok(0) => return,
+                Err(_) => return,
+                Ok(n) => n,
+            };
+
+            match Packet::parse(&buffer[..read_bytes]) {
+                Ok(packet) => {
+                    if (packet.header.header_type == HeaderType::InitServer) {
+                        match serde_cbor::from_slice::<InitServerRequest>(&packet.payload) {    
+                            Err(error) => {}
+                            Ok(request) => {
+                                
+                            }
+                        };
+                    }
+                }
+                Err(error) => {}
+            }
+        }
     }
 }

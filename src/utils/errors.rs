@@ -96,3 +96,9 @@ pub enum CardRequestError {
     #[error("Failed to parse full cards response")]
     SelectedCardsParseError
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum GameInstanceError {
+    #[error("Placeholder error, make a specific one")]
+    PlaceHolderError
+}

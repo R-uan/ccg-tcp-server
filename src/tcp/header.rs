@@ -36,11 +36,12 @@ pub enum HeaderType {
     Connect = 0x01,
     Ping = 0x02,
     Reconnect = 0x03,
-
+    
     GameState = 0x10,
 
     PlayCard = 0x11,
     AttackPlayer = 0x12,
+    InitServer = 0x13,
 
     InvalidHeader = 0xFA,
     AlreadyConnected = 0xFB,
@@ -76,6 +77,7 @@ impl Display for HeaderType {
             HeaderType::FailedToConnectPlayer => String::from("FAILED_TO_CONNECT_PLAYER"),
             HeaderType::InvalidPacketPayload => String::from("INVALID_PACKET_PAYLOAD"),
             HeaderType::ERROR => String::from("ERROR"),
+            HeaderType::InitServer => String::from("INIT_SERVER"),
 
             HeaderType::GameState => String::from("GAME_STATE"),
         };
@@ -107,6 +109,7 @@ impl TryFrom<u8> for HeaderType {
             0x10 => Ok(HeaderType::GameState),
             0x11 => Ok(HeaderType::PlayCard),
             0x12 => Ok(HeaderType::AttackPlayer),
+            0x13 => Ok(HeaderType::InitServer),
 
             0xFA => Ok(HeaderType::InvalidHeader),
             0xFB => Ok(HeaderType::AlreadyConnected),

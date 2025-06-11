@@ -22,14 +22,14 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn new_game() -> Self {
+    pub fn new_game(views: HashMap<String, Arc<RwLock<PlayerView>>>) -> Self {
         Self {
             rounds: 0,
             red_first: true,
             red_player: String::new(),
             blue_player: String::new(),
+            player_views: Arc::new(RwLock::new(views)),
             ongoing: Arc::new(RwLock::new(true)),
-            player_views: Arc::new(RwLock::new(HashMap::new()))
         }
     }
 

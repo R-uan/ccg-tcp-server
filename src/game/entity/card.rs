@@ -1,8 +1,8 @@
+use crate::models::http_response::SelectedCardsResponse;
+use crate::utils::errors::CardRequestError;
+use crate::SETTINGS;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use crate::models::http_response::SelectedCardsResponse;
-use crate::SETTINGS;
-use crate::utils::errors::CardRequestError;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CardRef {
@@ -15,10 +15,10 @@ pub struct Card {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub play_cost: u32,
-    pub attack: u32,
-    pub health: u32,
-    pub rarity: u16,
+    pub play_cost: i32,
+    pub attack: i32,
+    pub health: i32,
+    pub rarity: i16,
 
     // These will contain lua function names, I guess
     pub on_play: Vec<String>,
@@ -77,7 +77,8 @@ impl Card {
                                 return CardRequestError::SelectedCardsParseError;
                             })?;
 
-                    if selected_cards.cards_not_found.len() != 0 || selected_cards.invalid_card_guid.len() != 0
+                    if selected_cards.cards_not_found.len() != 0
+                        || selected_cards.invalid_card_guid.len() != 0
                     {
                         let message = format!(
                             "Not found: {}, Invalid cards: {}",
@@ -98,17 +99,41 @@ impl Card {
     }
 }
 
-
 #[derive(Serialize, Clone, Debug, Deserialize)]
 pub struct CardView {
     pub id: String,
-    pub hand_id: u32,
     pub name: String,
     pub attack: i32,
     pub health: i32,
-    pub card_type: String,
-    pub effects: Vec<String>,
+    pub play_cost: i32,
+    
     pub owner_id: String,
+    pub effects: Vec<String>,
+    pub position: Option<String>,
+    
+    pub in_deck: bool,
+    pub in_hand: bool,
+    pub in_board: bool,
+    pub in_graveyard: bool,
     pub is_exhausted: bool,
-    pub position: String,
+}
+
+impl CardView {
+    pub fn create_view(card: &Card, owner_id: String) -> Self {
+        CardView {
+            position: None,
+            owner_id: owner_id,
+            is_exhausted: false,
+            id: card.id.clone(),
+            effects: Vec::new(),
+            name: card.name.clone(),
+            attack: card.attack.clone(),
+            health: card.health.clone(),
+            play_cost: card.play_cost.clone(),
+            in_deck: false,
+            in_hand: false,
+            in_board: false,
+            in_graveyard: false,
+        }
+    }
 }
