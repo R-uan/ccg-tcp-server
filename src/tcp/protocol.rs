@@ -4,6 +4,7 @@ use crate::game::game::GameInstance;
 use crate::models::client_requests::PlayCardRequest;
 use crate::models::exit_code::ExitCode;
 use crate::tcp::header::HeaderType;
+use crate::tcp::header::HeaderType::PlayCard;
 use crate::tcp::packet::Packet;
 use crate::tcp::server::ServerInstance;
 use crate::utils::errors::{NetworkError, PlayerConnectionError};
@@ -11,12 +12,11 @@ use crate::{
     logger,
     utils::{checksum::Checksum, logger::Logger},
 };
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast::Sender;
 use tokio::sync::{broadcast, Mutex, RwLock};
-use crate::tcp::header::HeaderType::PlayCard;
 
 /// The Protocol struct handles the communication protocol for the server, managing client connections and packet processing.
 pub struct Protocol {
@@ -182,50 +182,49 @@ impl Protocol {
         temp_client: Arc<TemporaryClient>,
         packet: &Packet,
     ) -> Result<(), PlayerConnectionError> {
-        let player = Player::new_connection(&packet.payload).await?;
+        let player_authentication = Player::new_connection(&packet.payload).await?;
         logger!(
             INFO,
-            "[PROTOCOL] Client `{}` successfully authenticated as `{}`",
+            "[PROTOCOL] Client `{}` has been authenticated as player `{}`.",
             &temp_client.addr,
-            &player.username
+            &player_authentication.username
         );
-        match Arc::try_unwrap(temp_client) {
-            Ok(temp) => {
-                let player_id_clone = player.id.clone();
-                let addr = temp.addr;
-                let (read, write) = temp.stream.into_split();
-                let client = Arc::new(Client::new(read, write, addr, player, Arc::clone(&self)));
-                let mut connected_clients_guard = self.server_instance.connected_clients.write().await;
-                connected_clients_guard.insert(player_id_clone.clone(), Arc::clone(&client));
 
-                let game_instance = &self.game_instance;
-                let player_guard = client.player.read().await;
-                let player_deck = player_guard.current_deck.cards.clone();
-                if let Err(deck_error) = game_instance.fetch_cards_details(player_deck).await {
-                    self.server_instance
-                        .close_server(ExitCode::CardRequestFailed, &deck_error.to_string())
-                        .await;
+        let connected_players = self
+            .server_instance
+            .game_instance
+            .connected_players
+            .read()
+            .await;
+
+        if let Some(connected_player) = connected_players.get(&player_authentication.player_id) {
+            match Arc::try_unwrap(temp_client) {
+                Ok(temp) => {
+                    let (read, write) = temp.stream.into_split();
+                    let client = Arc::new(Client::new(
+                        read,
+                        write,
+                        temp.addr,
+                        self.clone(),
+                        connected_player.clone(),
+                    ));
+                    let mut clients_guard = self.server_instance.connected_clients.write().await;
+                    clients_guard.insert(player_authentication.player_id, client.clone());
+
+                    tokio::spawn({
+                        async move {
+                            client.clone().connect().await;
+                        }
+                    });
+
+                    Ok(())
                 }
-                
-                let mut connected_players_guard = self.game_instance.connected_players.write().await;
-                connected_players_guard.insert(player_id_clone.clone(), client.player.clone());
-                let game_state_guard = self.game_instance.game_state.read().await;
-                let mut game_state_player_view_guard = game_state_guard.player_views.write().await;
-                let player_view = Arc::new(RwLock::new(PlayerView::from_player(client.player.clone()).await));
-                game_state_player_view_guard.insert(player_id_clone.clone(), player_view);
-                
-                tokio::spawn({
-                    let client_clone = Arc::clone(&client);
-                    async move {
-                        client_clone.connect().await;
-                    }
-                });
-                
-                Ok(())
+                Err(_) => Err(PlayerConnectionError::InternalError(
+                    "Unable to unwrap temporary client".to_string(),
+                )),
             }
-            Err(_) => Err(PlayerConnectionError::InternalError(
-                "Failed to unwrap temporary client".to_string(),
-            )),
+        } else {
+            Err(PlayerConnectionError::PlayerNotConnected)
         }
     }
 
@@ -329,12 +328,15 @@ impl Protocol {
             }
             Err(error) => {
                 let error_message = error.to_string();
-                logger!(ERROR, "[PROTOCOL] Play card request: {}", error_message.clone());
+                logger!(
+                    ERROR,
+                    "[PROTOCOL] Play card request: {}",
+                    error_message.clone()
+                );
                 let error_packet = Packet::new(HeaderType::PlayCard, error_message.as_bytes());
                 let _ = self.send_packet(client, &error_packet).await;
             }
         }
-
     }
 
     /// Sends any missed packets to the client.

@@ -1,4 +1,4 @@
-use crate::game::entity::card::{Card, CardView};
+use crate::game::entity::card::Card;
 use crate::game::entity::player::{Player, PlayerView};
 use crate::game::game_state::GameState;
 use crate::game::lua_context::LuaContext;
@@ -23,7 +23,9 @@ pub struct GameInstance {
 impl GameInstance {
     pub async fn create_instance(players: Vec<PreloadPlayer>) -> Result<Self, GameInstanceError> {
         let mut lua_vm = ScriptManager::new_vm();
-        lua_vm.load_scripts().map_err(|e| GameInstanceError::PlaceHolderError)?;
+        lua_vm
+            .load_scripts()
+            .map_err(|e| GameInstanceError::PlaceHolderError)?;
         lua_vm.set_globals().await;
         let scripts = Arc::new(RwLock::new(lua_vm));
         //
@@ -50,10 +52,14 @@ impl GameInstance {
             }
 
             let deck_view = player_deck.create_view(&full_cards_map, &player_profile.id);
-            let player = Player::preload_player(player_profile, player_deck, deck_view).await;
-            let player_view = PlayerView::from_player(&player);
+            let player_view = Arc::new(RwLock::new(PlayerView::from_player(
+                &player_profile.id,
+                player_deck.cards.len(),
+            )));
             
-            connect_players_views.insert(player.id.clone(), Arc::new(RwLock::new(player_view)));
+            let player = Player::preload_player(player_profile, player_deck, deck_view, player_view.clone()).await;
+
+            connect_players_views.insert(player.id.clone(), player_view);
             connected_players.insert(player.id.clone(), Arc::new(RwLock::new(player)));
         }
 

@@ -44,13 +44,13 @@ impl Client {
         read_stream: OwnedReadHalf,
         write_stream: OwnedWriteHalf,
         addr: SocketAddr,
-        player: Player,
         protocol: Arc<Protocol>,
+        player: Arc<RwLock<Player>>,
     ) -> Self {
         Self {
+            player,
             protocol,
             addr: Arc::new(RwLock::new(addr)),
-            player: Arc::new(RwLock::new(player)),
             connected: Arc::new(RwLock::new(true)),
             read_stream: Arc::new(RwLock::new(read_stream)),
             write_stream: Arc::new(RwLock::new(write_stream)),
